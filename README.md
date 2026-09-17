@@ -28,8 +28,8 @@
 ### 桌面（正题）
 
 ```bash
-git clone git@github.com:liezhuren/pet.git
-cd pet
+git clone git@github.com:liezhuren/deskpet.git
+cd deskpet
 
 # ⚠ Windows 上装 Electron 必须走镜像，否则 postinstall 会**静默失败**
 #   （npm 退出码 0、包也装了，但没有 electron.exe）
