@@ -120,9 +120,26 @@ export function tick(session, input = {}) {
   if (s.policy.capped) notes.push(`档位被封顶：${s.policy.why}`)
 
   // ---------- 3) 事件写进"本局待压缩"，不直接入长期记忆 ----------
+  //
+  // ⚠ 这里原先写的是 `merged.slice(-pendingCap)` —— 超上限就把**最老的悄悄扔掉**。
+  //   长跑实测暴露了它的后果：一个连打几小时不退出游戏的玩家，
+  //   前面的事件会被无声丢弃，而且因为记忆只在一局结束时才写，
+  //   那一局前半段的经历**根本没有落盘的机会**（应用一关就全没了）。
+  //   现在改成：**先压缩最早的那批进长期记忆**，再截断。
+  //   代价是同一局可能产生多条摘要；但"少记一点"远好过"悄悄丢一堆"。
   if (events.length) {
-    const merged = [...s.pendingEvents, ...events]
-    s.pendingEvents = merged.slice(-SESSION_DEFAULTS.pendingCap)
+    let merged = [...s.pendingEvents, ...events]
+    if (merged.length > SESSION_DEFAULTS.pendingCap) {
+      const overflow = merged.length - SESSION_DEFAULTS.pendingCap
+      const oldest = merged.slice(0, overflow)
+      const { memory, summary } = consolidate(s.memory, oldest, { now, sid: s.sessionId })
+      s.memory = memory
+      s.midSessionSummaries = [...(s.midSessionSummaries ?? []), summary]
+      merged = merged.slice(overflow)
+      notes.push(`待压缩队列超过 ${SESSION_DEFAULTS.pendingCap} 条 ⇒ 先把最早 ${overflow} 条压成记忆（免得被静默丢弃）`)
+      if (summary?.text) notes.push(`中途摘要：${summary.text}`)
+    }
+    s.pendingEvents = merged
     // 同时作用到人格状态上（mood / 剧情进度）—— 这是"角色会为战况有反应"的唯一入口，
     // 也是 dialogue 层挑口吻的依据。模型不许改它。
     if (s.persona) s.persona = applyEvents(s.persona, events)
@@ -288,7 +305,7 @@ export function describeSession(session) {
     affinity: session.persona?.affinity ?? null,
     presence: {
       spoke: p.spoke, triggers: p.triggers, merged: p.merged,
-      silenceDuringPlay: p.silenceDuringPlay, caution: p.caution,
+      spokeWhileFocused: p.spokeWhileFocused, caution: p.caution,
       speaksPerHour: p.speaksPerHour,
     },
   }

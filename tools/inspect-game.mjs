@@ -120,7 +120,7 @@ if (AS_JSON) {
     console.log(`\n时机引擎：${out.speak ? `开口 —— ${out.speak.summaries.join(' / ')}` : '不说话'}`)
     for (const n of out.notes) console.log(`  · ${n}`)
     const m = summarize(out.state, { policy: pol })
-    console.log(`  指标：触发 ${m.triggers} · 开口 ${m.spoke} · 合并 ${m.merged} · 延迟 ${Math.round(m.triggerLatencyMs / 1000)}s · 专注期发言 ${m.silenceDuringPlay}`)
+    console.log(`  指标：触发 ${m.triggers} · 开口 ${m.spoke} · 合并 ${m.merged} · 延迟 ${Math.round(m.triggerLatencyMs / 1000)}s · 专注期发言 ${m.spokeWhileFocused}`)
   }
 
   if (r.notes.length) {

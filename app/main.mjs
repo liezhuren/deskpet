@@ -261,6 +261,8 @@ if (isEntry()) {
     app.whenReady().then(() => bootstrap())
     app.on('window-all-closed', () => { /* 桌宠常驻，不因关掉设置页退出 */ })
     app.on('before-quit', () => {
+      // ⚠ `runtime.stop()` 里会先 `endCurrentSession()` —— 那一步把本局事件压成记忆。
+      //   漏了它，玩几小时关掉应用 = 一点记忆都不剩（记忆只在一局结束时写）。
       try { runtime?.stop() } catch { /* 退出时不值得因为清理失败而卡住 */ }
     })
   }

@@ -428,6 +428,10 @@ export function createRuntime(p = {}) {
   }
   function stop() {
     if (timer) { clearIntervalImpl(timer); timer = null }
+    // ★ 退出前**结束当前这一局** —— 否则本局攒下的事件永远不会被压成记忆
+    //   （记忆只在一局结束时写；应用一关，那几个小时的经历就没了）。
+    //   这不是"顺手清理"，是数据能不能留下的分界线。
+    try { if (session) endCurrentSession({ now: now() }) } catch { /* 退出时不因为收尾失败而卡住 */ }
     persist()
     emit({ type: 'stopped' })
   }

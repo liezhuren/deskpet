@@ -223,7 +223,7 @@ try {
   kv('', '（主动搭话不走节流 —— 是玩家先开口的，不该被"别打扰"挡回去）')
 
   const snap = runtime.snapshot()
-  kv('可观测指标', `主动发言 ${snap.presence?.spoke ?? 0} 次 · 专注期沉默 ${snap.presence?.silenceDuringPlay ?? 0} 次 · 记忆 ${snap.memory?.entries ?? 0} 条`)
+  kv('可观测指标', `主动发言 ${snap.presence?.spoke ?? 0} 次 · 专注期沉默 ${snap.presence?.spokeWhileFocused ?? 0} 次 · 记忆 ${snap.memory?.entries ?? 0} 条`)
 
   // ════ ⑤ 跨会话 ════
   step('⑤', '退出游戏后：带着刚才的记忆继续聊')

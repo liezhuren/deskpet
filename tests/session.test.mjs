@@ -274,7 +274,7 @@ test('describeSession 给出可展示的概况', () => {
     assert.ok(d.capability.includes('progress'), '解出了存档 ⇒ 可读能力升级')
     assert.equal(d.level, 'moderate')
     assert.equal(d.capped, false)
-    assert.equal(d.presence.silenceDuringPlay, 0)
+    assert.equal(d.presence.spokeWhileFocused, 0)
     assert.equal(typeof d.presence.speaksPerHour, 'number')
     assert.equal(d.memory.entries, 0)
   } finally { t.done() }

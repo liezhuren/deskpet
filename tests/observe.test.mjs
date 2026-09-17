@@ -152,7 +152,7 @@ test('★ 完整链路的最后一环：触发 → 时机引擎 → 开口', () 
     assert.ok(out.speak, '应当开口')
     assert.equal(out.speak.kind, 'save', '主导触发是存档')
     assert.ok(out.speak.summaries.length >= 2, `应当合并了多条摘要，实际 ${out.speak.summaries.length}`)
-    assert.equal(summarize(out.state, { policy: pol }).silenceDuringPlay, 0)
+    assert.equal(summarize(out.state, { policy: pol }).spokeWhileFocused, 0)
   } finally { t.done() }
 })
 

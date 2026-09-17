@@ -53,7 +53,15 @@ export const LEVELS = Object.freeze({
   conservative: Object.freeze({
     settleMs: 20_000,          // 触发后等这么久，期间有新活动就取消
     mergeWindowMs: 20_000,     // 这段时间内的多次触发合成一次
-    pendingTtlMs: 5 * 60_000,  // ★ 触发最多等这么久。等不到松懈就作废，免得拿十分钟前的存档去搭话
+    // ★ pendingTtlMs 是**新鲜度守卫**，不是节流手段 —— 这一条是被长跑实测纠正的。
+    //   它回答的是"这条待发言还值不值得提"，节流是 globalCooldownMs + budgetPerHour 的职责。
+    //   先前两档给的是 5min / 3min，造成一个**反直觉的倒挂**：越主动的档位越没耐心。
+    //   而长跑实测（tools/longrun.mjs）显示：玩家存档后常常**继续打 3~20 分钟**才放下手柄，
+    //   于是 3 分钟的 TTL 让待发言**几乎总在松懈到来之前就作废** ——
+    //   `droppedExpired` 一直在涨、`spoke` 恒为 0，而"击败 boss 后存档、松懈下来搭话"
+    //   恰恰是这个产品存在的理由。宁可说得晚一点，也不能把那个时刻悄悄扔掉。
+    //   10 分钟是"再说'你刚存档了？'还不算离谱"的上界；超过它才作废。
+    pendingTtlMs: 10 * 60_000,
     minSignificance: 0.45,     // 低于此值不算一次"值得开口"的事件
     globalCooldownMs: 10 * 60_000,
     cooldownMs: Object.freeze({ save: 25 * 60_000, death: 12 * 60_000, exit: 5 * 60_000, progress: 30 * 60_000, combat: 20 * 60_000, item: 30 * 60_000, default: 25 * 60_000 }),
@@ -70,7 +78,10 @@ export const LEVELS = Object.freeze({
   moderate: Object.freeze({
     settleMs: 12_000,
     mergeWindowMs: 20_000,
-    pendingTtlMs: 3 * 60_000,
+    // 与 conservative 同值：TTL 是新鲜度守卫，不该随"主动程度"缩放（见保守档那段说明）。
+    // 曾经这里写的是 3 分钟 —— 那让 moderate **比** conservative 更容易错过松懈时刻，
+    // 与"moderate = 泄压点更灵敏"的定位正好相反。
+    pendingTtlMs: 10 * 60_000,
     minSignificance: 0.35,
     globalCooldownMs: 5 * 60_000,
     cooldownMs: Object.freeze({ save: 12 * 60_000, death: 6 * 60_000, exit: 3 * 60_000, progress: 15 * 60_000, combat: 12 * 60_000, item: 20 * 60_000, default: 12 * 60_000 }),
@@ -334,7 +345,7 @@ export function step(state, input, policy) {
     // ★ 玩家**主动**来找你说话（点了桌宠 / 打开对话窗）。
     //   这与"我们主动开口"是两件事，所以处理完全不同：
     //     · 不走节流（冷却 / 预算都是为了防止**打扰**；他先开的口，谈不上打扰）
-    //     · 不计入主动发言指标（否则 silenceDuringPlay 与 speaksPerHour 会被用户点击污染，
+    //     · 不计入主动发言指标（否则 spokeWhileFocused 与 speaksPerHour 会被用户点击污染，
     //       那两个指标就不再是"我们有多烦人"的度量了）
     //     · 顺手把"被忽略"清掉（人就在这儿，不算忽略）
     case 'manual': {
@@ -400,7 +411,7 @@ export function summarize(state, { policy, windowMs = 60 * 60_000 } = {}) {
     ignoredStreak: state.ignoredStreak,
     caution: state.caution,
     // ★ 玩家专注游戏期间的发言次数：**必须为 0**
-    silenceDuringPlay: state.stats.spokeWhileFocused,
+    spokeWhileFocused: state.stats.spokeWhileFocused,
     spoke: state.stats.spoke,
     triggers: state.stats.triggers,
     merged: state.stats.merged,
@@ -414,7 +425,7 @@ export function summarize(state, { policy, windowMs = 60 * 60_000 } = {}) {
     actions: state.stats.actions,
     replies: state.stats.replies,
     ignores: state.stats.ignores,
-    // 玩家主动搭话而被回应的次数。**不计入 speaksPerHour / silenceDuringPlay** ——
+    // 玩家主动搭话而被回应的次数。**不计入 speaksPerHour / spokeWhileFocused** ——
     // 那两个指标衡量的是"我们有多烦人"，被用户自己的点击污染就没意义了。
     answered: state.stats.answered ?? 0,
     spanMs: (state.observedTo ?? 0) - (state.observedFrom ?? 0),

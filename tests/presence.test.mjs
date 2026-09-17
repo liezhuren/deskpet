@@ -127,10 +127,10 @@ test('★ 存档后接着打两分钟再放下手柄 → 仍然开口（这才�
   ], p)
   assert.equal(r.speaks.length, 1)
   assert.ok(r.speaks[0].triggerLatencyMs >= min(2), '延迟体现的是"等玩家松懈"的时间')
-  assert.equal(r.metrics.silenceDuringPlay, 0)
+  assert.equal(r.metrics.spokeWhileFocused, 0)
 })
 
-test('★ silenceDuringPlay 必须恒为 0（这是硬性指标）', () => {
+test('★ spokeWhileFocused 必须恒为 0（这是硬性指标）', () => {
   const p = P()
   // 一整局都在专注（空闲始终很低），期间塞满各种触发
   const inputs = []
@@ -140,7 +140,7 @@ test('★ silenceDuringPlay 必须恒为 0（这是硬性指标）', () => {
   }
   const r = drive(inputs, p)
   assert.equal(r.speaks.length, 0, '专注期一次都不该说')
-  assert.equal(r.metrics.silenceDuringPlay, 0)
+  assert.equal(r.metrics.spokeWhileFocused, 0)
 })
 
 test('空转的 tick 不产生任何副作用', () => {
@@ -158,7 +158,7 @@ test('★ 核心场景：存档后放下手柄 → 在静默窗口结束时开�
   assert.equal(r.speaks.length, 1)
   assert.equal(r.speaks[0].kind, 'save')
   assert.equal(r.speaks[0].triggerLatencyMs, sec(21), '延迟应等于静默窗口的等待，而不是立刻开口')
-  assert.equal(r.metrics.silenceDuringPlay, 0)
+  assert.equal(r.metrics.spokeWhileFocused, 0)
 })
 
 test('★ 存档后马上又继续玩 → 这次泄压点作废，不开口', () => {
@@ -436,7 +436,7 @@ test('指标里的字段齐全且类型正确', () => {
   const r = drive(bossSaveScenario(), p)
   const m = r.metrics
   for (const k of ['speaksPerHour', 'triggerLatencyMs', 'usedTriggerRate', 'ignoredStreak',
-    'caution', 'silenceDuringPlay', 'spoke', 'triggers', 'actions', 'spanMs']) {
+    'caution', 'spokeWhileFocused', 'spoke', 'triggers', 'actions', 'spanMs']) {
     assert.ok(k in m, `指标缺少 ${k}`)
     assert.equal(typeof m[k], 'number', `${k} 应当是数字`)
   }
@@ -448,7 +448,7 @@ test('没有任何输入时指标是零而不是 NaN', () => {
   assert.equal(m.speaksPerHour, 0)
   assert.equal(m.triggerLatencyMs, 0)
   assert.equal(m.usedTriggerRate, 0)
-  assert.equal(m.silenceDuringPlay, 0)
+  assert.equal(m.spokeWhileFocused, 0)
 })
 
 // ══════════════════ J. replay / 纯函数 / 确定性 ══════════════════
@@ -520,7 +520,7 @@ test('★ 主动搭话不污染"我们有多烦人"的指标', () => {
   assert.equal(m.answered, 5)
   assert.equal(m.spoke, 0, '玩家的点击不该算成我们主动开口')
   assert.equal(m.speaksPerHour, 0)
-  assert.equal(m.silenceDuringPlay, 0)
+  assert.equal(m.spokeWhileFocused, 0)
 })
 
 test('主动搭话也会清掉"被忽略"（人就在这儿）', () => {
@@ -551,7 +551,7 @@ test('★ 场景一：打败 boss → 存档 → 又打了一会儿 → 放下�
   ], p)
   assert.equal(r.speaks.length, 1)
   assert.equal(r.speaks[0].kind, 'save')
-  assert.equal(r.metrics.silenceDuringPlay, 0, '全程一次都没在专注期插嘴')
+  assert.equal(r.metrics.spokeWhileFocused, 0, '全程一次都没在专注期插嘴')
   assert.ok(r.metrics.waitedForFocus >= 1, '那两次「还在打」应当被记为"继续等"，而不是丢掉机会')
   assert.ok(r.speaks[0].triggerLatencyMs >= sec(60), '延迟应当体现「等玩家真的松懈」')
 })
