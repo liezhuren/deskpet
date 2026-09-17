@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src file: data:; style-src 'self' 'unsafe-inline'; script-src 'self'" />
+  <title>桌宠设置</title>
+  <link rel="stylesheet" href="common.css" />
+</head>
+<body>
+  <header>
+    <h1>桌宠设置</h1>
+    <span class="spacer"></span>
+    <button id="btnCard" class="ghost">人物卡…</button>
+    <button id="btnClose" class="ghost">关闭</button>
+  </header>
+
+  <main>
+    <!-- ① 游戏与时机 -->
+    <section>
+      <h2>① 游戏与时机</h2>
+      <label>监视的游戏目录</label>
+      <div class="row">
+        <input id="gameDir" placeholder="留空 = 只做文本陪伴；或从下面列表里选一个" />
+        <button id="btnInspect">检测</button>
+      </div>
+      <p class="hint" id="inspectHint">点「检测」会告诉你这是什么引擎、能读出什么、被封在哪个档位。</p>
+      <div class="scroll" id="gameListWrap" style="display:none">
+        <table id="gameList"><thead><tr><th>引擎</th><th>置信度</th><th>存档</th><th>目录</th></tr></thead><tbody></tbody></table>
+      </div>
+      <div class="row tight" style="margin-top:8px">
+        <button id="btnListGames">列出本机游戏</button>
+        <span class="hint">共 <span id="gameCount">-</span> 个可识别目录</span>
+      </div>
+
+      <div class="row" style="margin-top:10px">
+        <div>
+          <label>主动档位</label>
+          <select id="level">
+            <option value="conservative">保守 —— 只在真正的泄压点开口</option>
+            <option value="moderate">中等 —— 泄压点更灵敏</option>
+          </select>
+        </div>
+        <div>
+          <label>检查间隔（毫秒）</label>
+          <input id="intervalMs" type="number" min="250" step="250" />
+        </div>
+      </div>
+      <p class="hint">
+        档位会被「实际读得到什么」封顶：只读得到存档变更与进程退出的游戏，
+        无论这里怎么调都只会用保守档 —— 读不到新东西却提高主动程度，只会逼桌宠编内容。
+      </p>
+      <label>该游戏的进程名（留空 = 由目录名猜，猜的会在下面标出来）</label>
+      <input id="processes" placeholder="HollowKnight.exe, Hollow Knight.exe" />
+      <p class="hint" id="processHint">进程名决定「游戏在不在跑」，进而决定要不要打扰你。</p>
+    </section>
+
+    <!-- ② 表达层 -->
+    <section>
+      <h2>② 表达层（角色怎么说话）</h2>
+      <div class="row">
+        <div>
+          <label>provider</label>
+          <select id="llmProvider">
+            <option value="template">模板（无需 API key）</option>
+            <option value="llm">LLM</option>
+          </select>
+        </div>
+        <div>
+          <label>服务商预设</label>
+          <select id="llmPreset">
+            <option value="deepseek">DeepSeek</option>
+            <option value="openai">OpenAI</option>
+            <option value="moonshot">Moonshot</option>
+            <option value="anthropic">Anthropic</option>
+          </select>
+        </div>
+      </div>
+      <div class="row">
+        <div><label>baseUrl（留空用预设）</label><input id="llmBaseUrl" placeholder="https://api.deepseek.com/v1" /></div>
+        <div><label>model</label><input id="llmModel" placeholder="deepseek-chat" /></div>
+      </div>
+      <label>apiKey</label>
+      <input id="llmApiKey" type="password" placeholder="留空则自动退回模板档" />
+      <p class="hint">
+        密钥只存在本机的状态目录里，界面上只显示脱敏形式（<span class="mono">sk-1****cdef</span>）。
+        没填 key 也能跑通全链路 —— 会退回模板档，而不是报错。
+      </p>
+      <div class="msg" id="llmMsg"></div>
+    </section>
+
+    <!-- ③ 桌宠窗 -->
+    <section>
+      <h2>③ 桌宠窗</h2>
+      <div class="row tight">
+        <label class="inline"><input id="alwaysOnTop" type="checkbox" /> 总在最前（含游戏全屏之上）</label>
+        <label class="inline"><input id="muted" type="checkbox" /> 静音模式（不说话，只做动作）</label>
+      </div>
+      <p class="hint">
+        桌宠窗默认**穿透点击**：指针压在它身上时才可点，其他位置的点会穿到游戏里。
+        拖动它即可移动；单击 = 主动搭话；双击打开本页；右键打开人物卡页。
+      </p>
+    </section>
+
+    <!-- ④ 诊断 -->
+    <section>
+      <h2>④ 诊断</h2>
+      <dl class="kv" id="diag"></dl>
+      <div class="row tight" style="margin-top:8px">
+        <button id="btnDiag">刷新</button>
+        <button id="btnPump">立即检查一次</button>
+        <button id="btnReset" class="ghost">清空记忆与监视状态</button>
+      </div>
+      <div class="msg" id="diagMsg"></div>
+    </section>
+
+    <div class="row tight">
+      <button id="btnSave" class="primary">保存</button>
+      <span class="msg" id="saveMsg"></span>
+    </div>
+  </main>
+
+  <script src="settings.js"></script>
+</body>
+</html>

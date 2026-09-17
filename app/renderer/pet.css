@@ -1,0 +1,109 @@
+/* app/renderer/pet.css —— 桌宠窗的样式
+ *
+ * 关键点：整页必须**完全透明**（html/body 都不能有背景），
+ * 否则 Electron 的 transparent:true 也就白设了 —— 会看到一个方块。 */
+html, body {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+  background: transparent;
+  overflow: hidden;
+  /* 桌宠不该能选中文本，也不该有原生拖拽 */
+  user-select: none;
+  -webkit-user-select: none;
+  cursor: default;
+}
+
+#stage {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-end;
+}
+
+/* 精灵：像素风素材用 image-rendering: pixelated 才不会糊 */
+#sprite {
+  image-rendering: pixelated;
+  transform-origin: 50% 100%;
+  transition: opacity .25s ease;
+  pointer-events: none;   /* 命中判定在 JS 里按矩形算，不靠 DOM 事件 */
+  -webkit-user-drag: none;
+}
+
+/* 气泡：角色说的话。初始隐藏，有话说时才浮出来。
+ *
+ * ⚠ 位置必须落在**窗口之内**。
+ *   最初写的是 `bottom: 100%`（本意是放到精灵上方），但那是相对 #stage 定位的，
+ *   结果气泡被顶到窗口外面、整段被裁掉 —— 表现是"代码看着没问题、截图里什么都没有"。
+ *   现在贴着窗口顶部，精灵在下方，两者都在框内。 */
+#bubble {
+  position: absolute;
+  top: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  max-width: 186px;
+  padding: 6px 9px;
+  border-radius: 9px;
+  background: rgba(24, 26, 33, .92);
+  color: #e9ecf3;
+  font: 12px/1.5 "Microsoft YaHei", "PingFang SC", system-ui, sans-serif;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, .35);
+  opacity: 0;
+  transition: opacity .2s ease;
+  pointer-events: none;
+  word-break: break-word;
+}
+#bubble.show { opacity: 1 }
+#bubble::after {
+  content: '';
+  position: absolute;
+  bottom: -5px;
+  left: 50%;
+  width: 10px;
+  height: 10px;
+  margin-left: -5px;
+  background: rgba(24, 26, 33, .92);
+  transform: rotate(45deg);
+}
+
+/* 顶部状态条：只在按住 Alt 时显示，平时完全不出现（桌宠不该有"界面"） */
+#hud {
+  position: absolute;
+  top: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  display: none;
+  gap: 6px;
+  padding: 3px 7px;
+  border-radius: 999px;
+  background: rgba(24, 26, 33, .86);
+  color: #cfd6e4;
+  font: 10px/1.4 "Microsoft YaHei", system-ui, sans-serif;
+  white-space: nowrap;
+  pointer-events: none;
+}
+body.hud-on #hud { display: flex }
+
+#hud b { color: #8fd7a8; font-weight: 600 }
+#hud .warn { color: #f0b96b }
+
+/* 没有素材时的占位：不要显示成空白，否则用户以为坏了 */
+#placeholder {
+  width: 96px;
+  height: 120px;
+  border-radius: 10px;
+  border: 1px dashed rgba(200, 210, 230, .45);
+  color: rgba(210, 220, 235, .8);
+  font: 11px/1.4 "Microsoft YaHei", system-ui, sans-serif;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: 6px;
+}
+body.no-art #placeholder { display: flex }
+body.no-art #sprite { display: none }

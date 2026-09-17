@@ -1,0 +1,17 @@
+# .gitattributes —— 规范换行，免得每次 git 都警告"LF 会被换成 CRLF"
+#
+# 为什么需要：Windows 上 core.autocrlf 常见为 true，于是 checkout 会把 LF 换成 CRLF、
+# 于是每一行都在 diff 里显示为"改动过"。源码仓里统一用 LF 最省事。
+* text=auto eol=lf
+
+# 二进制：绝不能做换行转换（转了文件就废了）
+*.png binary
+*.jpg binary
+*.ico binary
+*.exe binary
+*.zip binary
+*.gz binary
+
+# 生成物/二进制不需要 diff 统计
+package-lock.json -diff
+docs/CARD.md linguist-generated=true

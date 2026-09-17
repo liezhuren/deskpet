@@ -1,0 +1,32 @@
+# .gitignore —— 只忽略"生成物"和"你自己的东西"，源码一律进库
+
+# 依赖与构建
+node_modules/
+dist/
+*.log
+
+# ⚠ 应用状态：**绝对不要提交**
+#   里面有你的 apiKey、你在玩的游戏目录、桌宠记住的对话与偏好。
+#   默认位置是 Electron 的 userData 目录；用 --state-dir 指定时也可能落在这里。
+.pet-state/
+state/
+_pet-state/
+
+# ⚠ 你的真实游戏存档：项目从不修改它们，也从不提交它们
+#   （里面有玩家名、日期、游戏内容）。测试与演示都用临时目录里的副本。
+*.rpgsave
+*.rvdata2
+*.sav
+save/
+
+# 素材产物（用 `npm run art -- <目录>` 现生成即可，不必进库）
+assets/
+art-out/
+
+# 临时/草稿
+*.tmp
+*.bak
+_*.mjs
+_*.txt
+.DS_Store
+Thumbs.db

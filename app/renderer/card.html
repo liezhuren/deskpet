@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src file: data:; style-src 'self' 'unsafe-inline'; script-src 'self'" />
+  <title>人物卡</title>
+  <link rel="stylesheet" href="common.css" />
+</head>
+<body>
+  <header>
+    <h1>人物卡</h1>
+    <span class="pill" id="cardState">未载入</span>
+    <span class="spacer"></span>
+    <button id="btnSettings" class="ghost">设置…</button>
+    <button id="btnClose" class="ghost">关闭</button>
+  </header>
+
+  <main>
+    <!-- ① 填表式生成（★ 主流程：不让模型即兴生成，只让它往格子里填） -->
+    <section>
+      <h2>① 填表式生成（推荐）</h2>
+      <p class="hint">
+        格式由 <span class="mono">core/card-spec.mjs</span> 定死，界面上的格子就是全部字段 ——
+        **模型只负责往格子里填，没有机会决定"有哪些字段"**。
+        它填了未登记的格子会被直接丢掉；标了「需出处」的格子必须给出能在原文里找到的引文。
+      </p>
+      <div class="row">
+        <div><label>角色名 *</label><input id="fName" placeholder="霞" /></div>
+        <div><label>游戏标识 *</label><input id="fGame" placeholder="someday（记忆按它归属）" /></div>
+      </div>
+      <div class="row tight" style="margin-top:6px">
+        <button id="btnDraft" class="primary">1. 建草稿卡</button>
+        <span class="msg" id="draftMsg"></span>
+      </div>
+
+      <label>角色介绍：贴原文，或从网址抓</label>
+      <div class="row">
+        <input id="loreUrl" placeholder="https://…（只读静态 HTML；正文太短会如实告诉你）" />
+        <button id="btnFetch">抓取</button>
+      </div>
+      <textarea id="loreText" placeholder="把官方人设/百科介绍粘到这里…"></textarea>
+      <div class="row tight" style="margin-top:6px">
+        <button id="btnFill" class="primary">2. 出表并填</button>
+        <button id="btnFillHeuristic" class="ghost">只用启发式（不调模型）</button>
+        <span class="msg" id="fillMsg"></span>
+      </div>
+
+      <div id="formBrief" class="hint" style="margin-top:10px"></div>
+      <div id="slotTable"></div>
+
+      <div class="row tight" style="margin-top:8px">
+        <button id="btnApply" class="primary">3. 确认并写入</button>
+        <button id="btnAll" class="ghost">全选</button>
+        <button id="btnNone" class="ghost">全不选</button>
+        <span class="msg" id="applyMsg"></span>
+      </div>
+      <div class="msg" id="rejectMsg"></div>
+    </section>
+
+    <!-- ② 手工编辑硬约束 -->
+    <section>
+      <h2>② 手工改硬约束</h2>
+      <p class="hint" id="gapHint"></p>
+      <label>口癖（逗号分隔）</label><input id="hTics" placeholder="……才不是" />
+      <label>禁用词（逗号分隔，出现即判失败）</label><input id="hForbidden" placeholder="本小姐, 人家" />
+      <div class="row">
+        <div><label>最短字数</label><input id="hMin" type="number" min="1" /></div>
+        <div><label>最长字数</label><input id="hMax" type="number" min="1" /></div>
+        <div>
+          <label>表情策略</label>
+          <select id="hEmoji">
+            <option value="none">none —— 不许用</option>
+            <option value="allow">allow —— 随意</option>
+            <option value="require">require —— 必须带</option>
+          </select>
+        </div>
+      </div>
+      <label>称呼玩家</label><input id="fAddress" placeholder="你" />
+      <label>气质（决定需要哪些动作）</label>
+      <select id="fTemperament">
+        <option value="lively">活泼 —— 需要打招呼 + 高兴</option>
+        <option value="calm">冷静 —— 需要高兴</option>
+        <option value="cool">高冷 —— 需要关心</option>
+      </select>
+      <label>场景必提词（JSON，可留空）</label>
+      <input id="hMust" class="mono" placeholder='{"save":["存档"]}' />
+      <div class="row tight" style="margin-top:8px">
+        <button id="btnValidate">校验</button>
+        <button id="btnSaveCard" class="primary">保存并应用</button>
+      </div>
+      <div class="msg" id="validateMsg"></div>
+      <div class="scroll" id="hardExplain"></div>
+    </section>
+
+    <!-- ③ 导入导出 -->
+    <section>
+      <h2>③ 导入 / 导出</h2>
+      <textarea id="ioText" placeholder="导出后得到卡 JSON；也可以把别人的卡粘进来点「导入」"></textarea>
+      <div class="row tight" style="margin-top:8px">
+        <button id="btnExport">导出</button>
+        <button id="btnImport">导入</button>
+        <span class="msg" id="ioMsg"></span>
+      </div>
+    </section>
+
+    <!-- ④ 素材 -->
+    <section>
+      <h2>④ 桌宠素材（动作 + 画风）</h2>
+      <p class="hint">
+        需要哪些动作由气质决定：idle / idleBored / talk 是必需的（「长时间不理人做无聊动作」是点名的场景），
+        气质再追加。生成后会跑两条质量闸门：动作之间必须真的不同（否则还是"傻站着"），
+        且不能离立绘太远（否则角色跑形）。
+      </p>
+      <div class="row">
+        <div><label>立绘 PNG 路径（可留空，留空则程序化现画一个）</label><input id="artSource" placeholder="D:\art\kasumi.png" /></div>
+      </div>
+      <div class="row tight" style="margin-top:8px">
+        <button id="btnArt" class="primary">生成素材</button>
+        <button id="btnArtDry">只试算（不落盘）</button>
+        <span class="msg" id="artMsg"></span>
+      </div>
+      <div class="scroll" id="artResult"></div>
+    </section>
+  </main>
+
+  <script src="card.js"></script>
+</body>
+</html>

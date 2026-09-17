@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <!-- ⚠ style-src 必须含 'self'：最初漏了，于是 pet.css 被 CSP 拦掉，
+       整个页面变成"无样式的一堆文字"（HUD、气泡、占位框全叠在一起）。
+       这个 bug 只看代码看不出来 —— 是自检脚本截图之后看出来的。 -->
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src 'self' file: data:; style-src 'self' 'unsafe-inline'; script-src 'self'" />
+  <title>桌宠</title>
+  <link rel="stylesheet" href="pet.css" />
+</head>
+<body>
+  <div id="stage">
+    <div id="hud"></div>
+    <div id="bubble"></div>
+    <div id="placeholder">还没有素材<br />去「人物卡」页生成</div>
+    <img id="sprite" alt="" draggable="false" />
+  </div>
+  <script src="pet.js"></script>
+</body>
+</html>
