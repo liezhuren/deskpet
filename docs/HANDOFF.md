@@ -58,21 +58,24 @@
 ## 2. 现实侦察结论（★ 全部实测，不是查文档抄的）
 
 本机 `%USERPROFILE%\AppData\LocalLow` 下有 **50 个游戏目录**的真实存档与日志，
-`%APPDATA%\Godot\app_userdata` 下有真实的 Godot 游戏。用 `tools/probe-saves.mjs` 扫了 **158 个文件 /
-119 个存档候选**，解码链的实际成绩：
+`%APPDATA%\Godot\app_userdata` 下有真实的 Godot 游戏。用 `tools/probe-saves.mjs` 扫了 **201 个文件 /
+162 个存档候选**，解码链的实际成绩（**本机当前状态的快照** —— 装/卸游戏会变，
+所以看数字请现跑 `npm run probe`，别把这里的百分比当常数）：
 
-| 解出的内容（content） | 个数 | 说明 |
-|---|---|---|
-| `json` | **33** | 明文 JSON。**扩展名全在骗人**：`.dat` `.sav` `.data` `.mdrgslot` 里都是 JSON |
-| `xml` | **8** | Noita 存档就是 XML |
-| `godot-resource` | 1 | Godot `.tres`，信息量最大（见下） |
-| `ini` | 1 | Godot `settings.ini` |
-| **小计：完全解开** | **43 / 119 = 36.1%** | |
-| `base64-binary` | 18 | 单行 base64，解出来不是文本 ⇒ 多半加密 |
-| `dotnet-binaryformatter` | 11 | 认得出是 .NET BinaryFormatter，但本工具不实现二进制反序列化 |
-| **小计：类型已识破、内容解不开** | **29** | 这部分能给出有意义的说明，不是"未知" |
-| `binary` | 43 | 高熵，无头绪 |
-| `text` | 4 | 是文本但不在已知格式里 |
+| 解码链首层 | 个数 | 完全解开 | 说明 |
+|---|---|---|---|
+| `json` | **44** | 44 | 明文 JSON。**扩展名全在骗人**：`.dat` `.sav` `.data` `.mdrgslot` 里都是 JSON |
+| `xml` | **13** | 13 | Noita 存档就是 XML |
+| `base64` | 1 | 1 | 解出来还是文本 |
+| `json@offset` | 1 | 1 | JSON 前面有头部字节（要跳过空白/前缀才能解析） |
+| `godot-resource` | 1 | 1 | Godot `.tres`，信息量最大（见下） |
+| `ini` | 1 | 1 | Godot `settings.ini` |
+| **小计：完全解开** | **61 / 162 = 37.7%** | | |
+| `base64-binary` | 24 | 0 | 单行 base64，解出来不是文本 ⇒ 多半加密 |
+| `dotnet-binaryformatter` | 17 | 0 | 认得出是 .NET BinaryFormatter，但本工具不实现二进制反序列化 |
+| **小计：类型已识破、内容解不开** | **41** | | 这部分能给出有意义的说明，不是"未知" |
+| `binary` | 56 | 0 | 高熵，无头绪 |
+| `text` | 4 | 0 | 是文本但不在已知格式里 |
 
 **日志侧**：
 - Unity `LocalLow\<公司>\<产品>\Player.log` **一定存在**（8 款游戏实测），但**内容基本是引擎噪声**
