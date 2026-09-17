@@ -517,3 +517,47 @@ test('文档里列出了每个可填字段与空表', () => {
   assert.match(md, /空表/)
   for (const l of LAYERS) assert.ok(md.includes(`## ${l}`), `文档漏了层 ${l}`)
 })
+
+// ══════════════════ H. examples 不许过期 ══════════════════
+
+test('★ examples/card.example.json 必须是一张**能过校验**的卡（样例一旦失效就成了误导）', () => {
+  const path = join(import.meta.dirname, '..', 'examples', 'card.example.json')
+  assert.ok(existsSync(path), 'examples/card.example.json 不存在')
+  const card = JSON.parse(readFileSync(path, 'utf8'))
+
+  const check = validateCard(card)
+  assert.equal(check.ok, true, `样例卡过不了校验：${check.errors.join('；')}`)
+  assert.deepEqual(validateAgainstSpec(card).errors, [])
+  assert.equal(validateAgainstSpec(card).warnings.length, 0,
+    `样例卡不该有"未登记字段"这类警告：${validateAgainstSpec(card).warnings.join('；')}`)
+
+  // 它得是一张"有用的"卡：hard 层不能是空的，否则示例看不出这套格式的意义
+  assert.ok(card.persona.hard.speechTics.length > 0, '样例卡该有口癖')
+  assert.ok(card.persona.hard.forbiddenWords.length > 0, '样例卡该有禁用词')
+  assert.ok(card.persona.soft.background.length > 20, '样例卡该有背景')
+  assert.equal(card.draft, false, '样例卡不该还是草稿')
+  assert.deepEqual(validateAgainstSpec(card).errors, [])
+})
+
+test('★ examples/lore.example.txt 与样例卡是**对得上**的（介绍里确实有那些约束的依据）', () => {
+  const lorePath = join(import.meta.dirname, '..', 'examples', 'lore.example.txt')
+  const cardPath = join(import.meta.dirname, '..', 'examples', 'card.example.json')
+  const lore = readFileSync(lorePath, 'utf8')
+  const card = JSON.parse(readFileSync(cardPath, 'utf8'))
+
+  // 口癖与禁用词都必须能在介绍原文里找到 —— 否则这份样例就是在教人编设定
+  for (const t of card.persona.hard.speechTics) {
+    assert.ok(lore.includes(t), `口癖 ${JSON.stringify(t)} 在 lore.example.txt 里找不到`)
+  }
+  for (const w of card.persona.hard.forbiddenWords) {
+    assert.ok(lore.includes(w), `禁用词 ${JSON.stringify(w)} 在 lore.example.txt 里找不到`)
+  }
+  assert.ok(lore.includes(Object.values(card.persona.hard.addresses)[0]), '称呼要在介绍里找得到')
+})
+
+test('examples/README.md 说清了样例是怎么来的（含"留空是正确行为"那句）', () => {
+  const md = readFileSync(join(import.meta.dirname, '..', 'examples', 'README.md'), 'utf8')
+  assert.match(md, /不是手写的|由真实的填表流程产出/)
+  assert.match(md, /留空是正确行为/)
+  assert.match(md, /game/)
+})
