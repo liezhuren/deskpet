@@ -251,14 +251,16 @@ test('★ fillCardFromWiki：抓 Wiki → 出表 → 填 → 拿到可确认的�
     wiki: { delayMs: 0 },
   })
   assert.equal(r.source, 'heuristic')
-  assert.ok(r.wiki.ok)
-  assert.equal(r.wiki.pages.filter((p) => p.ok).length, 3)
+  // 旧的 `r.wiki` 形状已换成三级信源那套（gather / sources / tiers）
+  assert.ok(r.gather.ok)
+  assert.equal(r.sources.length, 3, '种子页 + 2 个子页')
+  assert.ok(r.sources.every((s) => s.tier === 'official'), '旧入口给的 URL 只走官方这一级')
   assert.deepEqual(Object.keys(r.form.slots).length > 0, true, '表要出得来')
   const byPath = Object.fromEntries(r.proposals.map((p) => [p.path, p.value]))
   assert.deepEqual(byPath['persona.hard.speechTics'], ['……才不是'], JSON.stringify(byPath))
   assert.deepEqual(byPath['persona.hard.forbiddenWords'], ['谢谢'])
   assert.equal(byPath['animation.temperament'], 'lively', '「性格开朗」该推出活泼')
-  assert.ok(r.notes.some((n) => n.includes('合并 3 页')), r.notes.join(' | '))
+  assert.ok(r.notes.some((n) => n.includes('共 3 页')), r.notes.join(' | '))
 })
 
 test('★ fillCardFromWiki：抓不到就**不硬凑** —— 如实说，且不出提议', async () => {
@@ -266,8 +268,9 @@ test('★ fillCardFromWiki：抓不到就**不硬凑** —— 如实说，且不
   const r = await fillCardFromWiki({ url: SEED, name: '霞', fetchImpl: site.fetchImpl, sleepImpl: async () => {}, forceHeuristic: true })
   assert.equal(r.source, 'none')
   assert.deepEqual(r.proposals, [])
-  assert.equal(r.wiki.ok, false)
-  assert.ok(r.notes.some((n) => n.includes('没拿到正文')), r.notes.join(' | '))
+  assert.equal(r.gather.ok, false)
+  assert.deepEqual(r.sources, [])
+  assert.ok(r.notes.some((n) => n.includes('都没拿到正文')), r.notes.join(' | '))
   assert.ok(r.form && Object.keys(r.form.slots).length > 0, '表本身还是要给出来（用户可以手填）')
 })
 
@@ -281,8 +284,10 @@ test('★ 子页贡献的证据也能过核验（合并文本里确实有那句�
   })
   const tics = r.proposals.find((p) => p.path === 'persona.hard.speechTics')
   assert.ok(tics, '子页里的口癖该被抽到')
-  // 证据必须能在**合并后的文本**里找到（因为核验就是对着它做的）
-  assert.ok(r.wiki.text.includes(tics.evidence), '证据要能在合并文本里逐字找到')
+  // 证据必须能在**合并后的文本**里找到（因为核验就是对着它做的）。
+  // ⚠ 带标注的那份 (r.gather.text) 给追溯用；不带标注的那份 (textPlain) 才是喂给填表的。
+  assert.ok(r.gather.text.includes(tics.evidence), '证据要能在带标注的合并文本里逐字找到')
+  assert.equal(tics.tier, 'official', '这条出自官方这一级')
 })
 
 test('fillCardFromWiki 对脏输入不崩', async () => {

@@ -38,6 +38,37 @@
         <input id="loreUrl" placeholder="https://…（只读静态 HTML；正文太短会如实告诉你）" />
         <button id="btnFetch">抓取</button>
       </div>
+
+      <!-- ★ 三级信源：官方 → 社区 Wiki → 搜索，依次取用、够用即停 -->
+      <details id="srcBox" open>
+        <summary>信源（依次取用：官方 → 社区 Wiki → 搜索）</summary>
+        <p class="hint">
+          按<strong>可信度依次</strong>找料：先问官方，不够再问社区 Wiki，还不够才去搜。
+          <strong>累计够了就停手</strong>，不去打扰下一级。每条填进卡里的约束都会标出它出自哪一级 ——
+          同样是「她的口癖是……」，出自官方设定与出自搜索结果，分量完全不同。
+        </p>
+        <label>官方页面（每行一个）—— <strong>官方域名不猜，只认这里给的</strong></label>
+        <textarea id="srcOfficial" rows="2" placeholder="https://官网/角色页&#10;https://官网/设定集"></textarea>
+        <div class="row">
+          <div><label>官方域名（逗号分隔，用于归类）</label><input id="srcHosts" placeholder="example-official.com" /></div>
+        </div>
+        <label>社区 Wiki 站点（每行一个站点地址，会用它的检索接口找角色页）</label>
+        <textarea id="srcCommunity" rows="2" placeholder="https://xxx.fandom.com&#10;https://wiki.gg/xxx"></textarea>
+        <div class="row tight">
+          <label class="inline"><input id="srcSearch" type="checkbox" checked /> 允许用搜索引擎兜底</label>
+          <div><label>「够用即停」阈值（字符）</label><input id="srcEnough" type="number" min="0" step="100" value="600" /></div>
+        </div>
+        <div class="row">
+          <div><label>搜索端点模板（含 {q}）</label><input id="srcTemplate" placeholder="https://html.duckduckgo.com/html/?q={q}" /></div>
+        </div>
+        <div class="row tight" style="margin-top:6px">
+          <button id="btnSrcFill" class="primary">按三级信源出表并填</button>
+          <button id="btnSrcSave" class="ghost">把信源配置存进设置</button>
+          <span class="msg" id="srcMsg"></span>
+        </div>
+        <div id="srcReport"></div>
+      </details>
+
       <textarea id="loreText" placeholder="把官方人设/百科介绍粘到这里…"></textarea>
       <div class="row tight" style="margin-top:6px">
         <button id="btnFill" class="primary">2. 出表并填</button>

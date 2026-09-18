@@ -23,6 +23,8 @@ const CHANNELS = [
   'llm:purposes', 'llm:config',
   // ★ Wiki 管线
   'wiki:fetch', 'wiki:fill',
+  // ★ 三级信源（官方 → 社区 Wiki → 搜索）
+  'sources:fill', 'sources:tiers',
   'games:list', 'game:inspect', 'game:patterns',
   'diag', 'pet:interactive', 'pet:move', 'pet:speak',
   'window:open', 'window:close',
@@ -92,6 +94,10 @@ contextBridge.exposeInMainWorld('petApi', {
   // ---- ★ Wiki 管线 ----
   fetchWiki: (url, o) => invoke('wiki:fetch', url, o ?? {}),
   fillCardFromWiki: (o) => invoke('wiki:fill', o ?? {}),
+  /** ★ 三级信源依次取用并填表（官方 → 社区 Wiki → 搜索），每条提议带出处层级 */
+  fillCardFromSources: (o) => invoke('sources:fill', o ?? {}),
+  /** 三级信源的登记表（界面用来渲染说明） */
+  listSourceTiers: () => invoke('sources:tiers'),
 
   /** 鼠标是否压在桌宠身上 —— 决定"穿透点击"开关（见 main.mjs） */
   setInteractive: (v) => invoke('pet:interactive', v === true),

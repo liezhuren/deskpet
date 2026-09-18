@@ -109,6 +109,22 @@ function renderSlots(r) {
     const tdEv = document.createElement('td')
     tdEv.textContent = s.evidence ? s.evidence : '（这一格不需要出处）'
     tdEv.style.color = s.evidence ? '' : 'var(--dim)'
+    // ★ 出处层级：这条约束是从哪一级信源来的（官方 / 社区 Wiki / 搜索）
+    if (s.tierLabel) {
+      const badge = document.createElement('span')
+      badge.className = 'mono'
+      badge.textContent = ` 【${s.tierLabel}】`
+      badge.style.color = TIER_COLOR[s.tier] ?? 'var(--dim)'
+      badge.title = s.tierTitle ? `出自：${s.tierTitle}${s.tierVia === 'value' ? '（按值反查）' : ''}` : ''
+      tdEv.appendChild(badge)
+    } else if (s.evidence) {
+      const badge = document.createElement('span')
+      badge.className = 'mono'
+      badge.textContent = ' 【出处不明】'
+      badge.style.color = 'var(--dim)'
+      badge.title = '这一格的引文没能在取到的材料里定位到 —— 如实标出来，不硬安层级'
+      tdEv.appendChild(badge)
+    }
 
     tr.append(tdChk, tdPath, tdVal, tdEv)
     tb.appendChild(tr)
@@ -145,6 +161,98 @@ async function applyFill() {
   show('rejectMsg', rejected ? r.rejected.map((x) => `· ${x.path}：${x.reason}`).join('\n') : '')
   show('gapHint', '已写入 —— 需要的话在下面②继续手工微调')
 }
+
+// ---------- ★ 三级信源：官方 → 社区 Wiki → 搜索 ----------
+//
+// 这一栏是"依次取用"的操作面板：配置三级各自的入口，一次把料取齐、填表、出提议。
+// 结果区**逐级显示**（哪一级给了多少字、停在哪一级），外加每条提议的出处层级 ——
+// 用户于是能判断：这张卡里哪些格子是有权威依据的，哪些只是网上有人说。
+
+const TIER_COLOR = { official: '#7fc8a9', community: '#89b4e8', search: '#e0b060', unknown: 'var(--dim)' }
+
+/** 多行文本 → 字符串数组（去空行与首尾空白）。 */
+const lines = (v) => String(v ?? '').split('\n').map((s) => s.trim()).filter((s) => s !== '')
+/** 逗号/中文逗号/空白分隔 → 字符串数组。 */
+const words = (v) => String(v ?? '').split(/[,，\s]+/).map((s) => s.trim()).filter((s) => s !== '')
+
+const collectSources = () => ({
+  officialUrls: lines($('srcOfficial').value),
+  officialHosts: words($('srcHosts').value),
+  communityBases: lines($('srcCommunity').value),
+  enableSearch: $('srcSearch').checked,
+  searchTemplate: $('srcTemplate').value.trim() || undefined,
+  enoughChars: Number($('srcEnough').value) || undefined,
+})
+
+async function runSourceFill() {
+  const base = fillState.base ?? await makeDraft()
+  if (!base) return
+  show('srcMsg', '按顺序取用信源…', '')
+  const r = await petApi.fillCardFromSources({
+    card: base,
+    name: $('fName').value.trim() || undefined,
+    game: $('fGame').value.trim() || undefined,
+    ...collectSources(),
+  })
+  fillState.slots = r.proposals ?? []
+  fillState.confirmed = Object.fromEntries(fillState.slots.map((s) => [s.path, true]))
+  renderSlots(r)
+  renderBrief(r)
+  renderSourceReport(r)
+  if (r.source === 'none') {
+    show('srcMsg', `三级信源都没拿到正文：${(r.notes ?? []).join('\n')}`, 'err')
+  } else {
+    const bits = Object.entries(r.byTier ?? {}).map(([k, v]) => `${k} ${v} 格`).join('，')
+    show('srcMsg', `填了 ${fillState.slots.length} 格（逐条出处：${bits || '—'}）`, 'ok')
+  }
+}
+
+/** 把"逐级取用"的过程显示出来：哪一级有料、停在哪一级、为什么。 */
+function renderSourceReport(r) {
+  const wrap = $('srcReport')
+  wrap.innerHTML = ''
+  if (!r?.tiers?.length) return
+
+  const table = document.createElement('table')
+  table.innerHTML = '<thead><tr><th>顺序</th><th>信源</th><th>结果</th><th>说明</th></tr></thead>'
+  const tb = document.createElement('tbody')
+  for (const [i, t] of r.tiers.entries()) {
+    const tr = document.createElement('tr')
+    const mark = t.chars > 0 ? '✓ 取到' : (t.attempted ? '· 没取到' : '— 没跑')
+    const cells = [
+      { text: String(i + 1) },
+      { text: t.label },
+      { text: `${mark}　${t.chars} 字${t.sources ? `（${t.sources} 页）` : ''}`, cls: 'mono' },
+      { text: (t.notes ?? []).join('；') },
+    ]
+    for (const c of cells) {
+      const td = document.createElement('td')
+      td.textContent = c.text
+      if (c.cls) td.className = c.cls
+      tr.appendChild(td)
+    }
+    tr.style.color = t.chars > 0 ? TIER_COLOR[t.id] : 'var(--dim)'
+    tb.appendChild(tr)
+  }
+  table.appendChild(tb)
+  wrap.appendChild(table)
+
+  const foot = document.createElement('p')
+  foot.className = 'hint'
+  const stoppedLabel = r.tiers.find((t) => t.id === r.stoppedAt)?.label ?? r.stoppedAt
+  foot.textContent = (r.stoppedAt
+    ? `★ 停在「${stoppedLabel}」这一级 —— 累计材料已经够用，没有再去问下一级。`
+    : '★ 三级都跑过了（没有哪一级让累计材料达到「够用」阈值）。')
+    + `\n取到的页面：${(r.sources ?? []).map((s) => `${s.tier}:${s.title ?? s.url}`).join(' | ') || '无'}`
+  foot.style.whiteSpace = 'pre-wrap'
+  wrap.appendChild(foot)
+}
+
+$('btnSrcFill').addEventListener('click', () => runSourceFill().catch((e) => show('srcMsg', e.message, 'err')))
+$('btnSrcSave').addEventListener('click', async () => {
+  const r = await petApi.setSettings({ sources: collectSources() })
+  show('srcMsg', r.ok ? '信源配置已保存' : `保存失败：${(r.errors ?? []).join('；')}`, r.ok ? 'ok' : 'err')
+})
 
 // ---------- 表单 ↔ 卡 ----------
 
@@ -369,6 +477,18 @@ $('btnArtDry').addEventListener('click', () => buildArt(true))
 $('btnClose').addEventListener('click', () => petApi.closeWindow())
 $('btnSettings').addEventListener('click', () => petApi.openWindow('settings'))
 
+/** 把已保存的信源配置回填到表单里。 */
+function loadSources(settings) {
+  const sc = settings?.sources
+  if (!sc) return
+  $('srcOfficial').value = (sc.officialUrls ?? []).join('\n')
+  $('srcHosts').value = (sc.officialHosts ?? []).join(', ')
+  $('srcCommunity').value = (sc.communityBases ?? []).join('\n')
+  $('srcSearch').checked = sc.enableSearch !== false
+  if (sc.searchTemplate) $('srcTemplate').value = sc.searchTemplate
+  if (Number.isFinite(sc.enoughChars)) $('srcEnough').value = String(sc.enoughChars)
+}
+
 async function init() {
   const s = await petApi.snapshot()
   // 先把"表里有哪些格子"显示出来 —— 让用户一开始就看见格式是定死的
@@ -376,6 +496,15 @@ async function init() {
     const form = await petApi.cardForm()
     $('formBrief').textContent = `格式 ${form.format}：共 ${Object.keys(form.slots).length} 个格子（由 core/card-spec.mjs 定死）。`
   } catch { /* 显示不出来不影响主流程 */ }
+  loadSources(s.settings)
+  // 三级信源的说明从登记表来（不在渲染端重复写一份文案）
+  try {
+    const tiers = await petApi.listSourceTiers()
+    if (Array.isArray(tiers) && tiers.length) {
+      $('srcBox').querySelector('summary').textContent =
+        `信源（依次取用：${tiers.map((t) => t.label).join(' → ')}）`
+    }
+  } catch { /* 拿不到就不改标题 */ }
   if (s.card) {
     const full = await petApi.getCard()
     current = full ?? null

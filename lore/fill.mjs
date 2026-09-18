@@ -30,6 +30,7 @@ import {
   verifyProposals, applyProposals, mergeProposals, proposeHeuristic,
 } from './propose.mjs'
 import { fetchWiki } from './fetch.mjs'
+import { gatherLore, locateTier, tierLabel } from './gather.mjs'
 
 /** 表的格式标识（写进表里，便于识别与将来的迁移）。 */
 export const FORM_FORMAT = `game-pet-agent/form@${CARD_VERSION}`
@@ -272,39 +273,95 @@ export async function fillCardForm(p = {}) {
 }
 
 /**
- * ★ Wiki 管线接进填表流程：抓页面（含子页）→ 合并 → 出表并填。
+ * ★ 三级信源接进填表流程：依次取用（官方 → 社区 Wiki → 搜索）→ 合并 → 出表并填 →
+ * **给每条提议标出它出自哪一级**。
  *
- * 只是把 `fetchWiki` 与 `fillCardForm` 组合起来，**不重复实现任何一步** ——
- * 于是"抓取"与"填表"各自的行为与边界仍然只有一处定义。
- * 抓不到正文时**不硬凑**：直接把失败原因带回去，让界面显示"这一页没抓到"。
+ * 最后那一步是这套管线真正的价值：同样是「她的口癖是「……才不是」」，
+ * 出自官方设定与出自搜索结果的可信度完全不同。用户看得到层级，才知道该信哪几条。
+ * 引文若在更高级也出现，**算最高那级**（"官方也这么说"是不同的分量）。
  *
- * @param {{url:string, card?:object, provider?:object, name?:string, forceHeuristic?:boolean,
- *          fetchImpl?:Function, sleepImpl?:Function, wiki?:object}} p
- * @returns {Promise<object>} 同 fillCardForm，另加 `wiki` 字段（逐页的成功/失败与说明）
+ * @param {{name:string, game?:string, officialUrls?:string[], officialHosts?:string[],
+ *          communityBases?:string[], enableSearch?:boolean, searchTemplate?:string,
+ *          card?:object, provider?:object, forceHeuristic?:boolean,
+ *          fetchImpl?:Function, sleepImpl?:Function, limits?:object}} p
+ * @returns {Promise<object>} 同 fillCardForm，另加 `sources`（逐页）· `tiers`（逐级）· `stoppedAt`
  */
-export async function fillCardFromWiki(p = {}) {
+export async function fillCardFromSources(p = {}) {
   const o = (p && typeof p === 'object') ? p : {}
-  const fetched = await fetchWiki(o.url, {
-    ...(o.wiki && typeof o.wiki === 'object' ? o.wiki : {}),
+  const gathered = await gatherLore({
     name: o.name ?? o.card?.name,
+    game: o.game,
+    officialUrls: o.officialUrls,
+    officialHosts: o.officialHosts,
+    communityBases: o.communityBases,
+    enableSearch: o.enableSearch,
+    searchTemplate: o.searchTemplate,
+    onlyTiers: o.onlyTiers,
+    limits: o.limits,
     ...(o.fetchImpl ? { fetchImpl: o.fetchImpl } : {}),
     ...(o.sleepImpl ? { sleepImpl: o.sleepImpl } : {}),
   })
-  if (!fetched.ok) {
+  if (!gathered.ok) {
     return {
       form: fillForm(), parsed: null, proposals: [], rejected: [],
-      source: 'none', wiki: fetched,
-      notes: [`Wiki 抓取没拿到正文：${fetched.error}`, ...fetched.notes],
+      source: 'none', gather: gathered, sources: [], tiers: gathered.tiers, stoppedAt: null,
+      notes: [`三级信源都没拿到正文：${gathered.error}`, ...gathered.notes],
     }
   }
   const filled = await fillCardForm({
-    lore: fetched.text,
+    // ★ 喂**不带标注**的纯正文：标注是给人看与追溯用的，
+    //   混进去会被当成正文（第一版就把 soft.background 填成了标注头 + 整页原文）
+    lore: gathered.textPlain ?? gathered.text,
     card: o.card,
     provider: o.provider,
     name: o.name ?? o.card?.name,
     forceHeuristic: o.forceHeuristic === true,
   })
-  return { ...filled, wiki: fetched, notes: [...fetched.notes, ...filled.notes] }
+  // ★ 逐条追溯：先拿引文去合并文本里反查层级；引文追不到时**退回用"值本身"**。
+  //   为什么要退回：soft 层的某些格子（如 persona.soft.background）用的是概括句，
+  //   它的 `evidence` 未必是逐字引文 —— 但"填进这个格子里的那段文字"一定来自某一级。
+  //   两条都追不到才标 null（并如实说"这条没有出处"），绝不硬安一个层级上去。
+  const proposals = (filled.proposals ?? []).map((pr) => {
+    let loc = locateTier(gathered.text, pr.evidence ?? '')
+    let via = 'evidence'
+    if (!loc.tier) {
+      const v = Array.isArray(pr.value) ? pr.value.join('\n') : String(pr.value ?? '')
+      const loc2 = locateTier(gathered.text, v)
+      if (loc2.tier) { loc = loc2; via = 'value' }
+    }
+    return { ...pr, tier: loc.tier, tierLabel: loc.label, tierTitle: loc.title, tierVia: loc.tier ? via : null }
+  })
+  const byTier = {}
+  for (const pr of proposals) byTier[pr.tier ?? 'unknown'] = (byTier[pr.tier ?? 'unknown'] ?? 0) + 1
+  const srcNotes = [...gathered.notes]
+  if (proposals.length) {
+    srcNotes.push(`逐条追溯：${Object.entries(byTier).map(([k, v]) => `${tierLabel(k)} ${v} 条`).join('，')}`)
+  }
+  return {
+    ...filled,
+    proposals,
+    gather: gathered,
+    sources: gathered.sources,
+    tiers: gathered.tiers,
+    stoppedAt: gathered.stoppedAt,
+    byTier,
+    notes: [...srcNotes, ...filled.notes],
+  }
+}
+
+/**
+ * 旧的入口（只抓一个页面 + 同域子页）—— **保留**，但明确指向新管线：
+ * 它等价于"只给一个官方 URL、不开社区与搜索"。新代码请用 `fillCardFromSources`。
+ */
+export async function fillCardFromWiki(p = {}) {
+  const o = (p && typeof p === 'object') ? p : {}
+  return fillCardFromSources({
+    ...o,
+    officialUrls: o.url ? [o.url] : [],
+    communityBases: [],
+    enableSearch: false,
+    wiki: o.wiki,
+  })
 }
 
 /** 启发式填表：把 proposeHeuristic 的输出**投影到同一张表上**，于是两条路下游完全一致。 */

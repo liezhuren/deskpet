@@ -314,6 +314,9 @@ export function registerIpc({ store, probe }) {
   // ---- ★ Wiki 管线（②）----
   handle('wiki:fetch', (url, o) => runtime.fetchWiki(url, o ?? {}))
   handle('wiki:fill', (o) => runtime.fillCardFromWiki(o ?? {}))
+  // ---- ★ 三级信源（官方 → 社区 Wiki → 搜索）----
+  handle('sources:fill', (o) => runtime.fillCardFromSources(o ?? {}))
+  handle('sources:tiers', () => runtime.sourceTiers())
 }
 
 // ---------- 作为入口直接运行时 ----------

@@ -396,8 +396,9 @@ test('★ runtime.fillCardFromWiki：注入 fetch ⇒ 离线跑通（抓页面 �
       wiki: { delayMs: 0 },   // 别真的等
       card: draftCard({ name: '霞', game: 'someday' }).card,
     })
-    assert.equal(r.wiki.ok, true, r.notes.join(' | '))
-    assert.equal(r.wiki.pages.filter((p) => p.ok).length, 2, '种子页 + 语音子页')
+    assert.equal(r.gather.ok, true, r.notes.join(' | '))
+    assert.equal(r.sources.length, 2, '种子页 + 语音子页')
+    assert.ok(r.sources.every((s) => s.tier === 'official'), '旧入口只走官方这一级')
     const tics = r.proposals.find((p) => p.path === 'persona.hard.speechTics')
     assert.ok(tics, JSON.stringify(r.proposals.map((p) => p.path)))
     assert.deepEqual(tics.value, ['……才不是'])

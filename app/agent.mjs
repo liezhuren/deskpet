@@ -27,7 +27,8 @@ import { createStore, DEFAULT_SETTINGS, redactSettings, resolveLlmConfig, PURPOS
 import { createProbe, resolveProcessNames } from './probe.mjs'
 import { draftCard as makeDraft, draftGaps } from './cardgen.mjs'
 import { fetchLore, fetchWiki } from '../lore/fetch.mjs'
-import { fillCardForm as runFillForm, applyFilledForm, fillForm, fillCardFromWiki } from '../lore/fill.mjs'
+import { fillCardForm as runFillForm, applyFilledForm, fillForm, fillCardFromWiki, fillCardFromSources } from '../lore/fill.mjs'
+import { SOURCE_TIERS, tierLabel } from '../lore/sources.mjs'
 import { modelFillablePaths, blankForm } from '../core/card-spec.mjs'
 import { createLlmProvider } from '../dialogue/llm.mjs'
 import { createToolRunner, missingHandlers } from './tools.mjs'
@@ -639,12 +640,40 @@ export function createRuntime(p = {}) {
       ...(p.fetchImpl ? { fetchImpl: p.fetchImpl } : {}),
       ...(o ?? {}),
     }),
+    /**
+     * ★ 三级信源生成角色卡：官方 → 社区 Wiki → 搜索，够用即停。
+     * 信源配置来自设置（`sources.*`），调用方可以逐个覆盖（界面上那一栏就是干这个的）。
+     */
+    fillCardFromSources: (o) => {
+      const sc = settings.sources ?? {}
+      const opt = (o && typeof o === 'object') ? o : {}
+      return fillCardFromSources({
+        card,
+        name: opt.name ?? card?.name,
+        game: opt.game ?? gameKeyFor(settings.game.dir),
+        provider: providerFor('cardFill'),
+        officialUrls: opt.officialUrls ?? sc.officialUrls ?? [],
+        officialHosts: opt.officialHosts ?? sc.officialHosts ?? [],
+        communityBases: opt.communityBases ?? sc.communityBases ?? [],
+        enableSearch: opt.enableSearch ?? sc.enableSearch !== false,
+        searchTemplate: opt.searchTemplate ?? sc.searchTemplate,
+        forceHeuristic: opt.forceHeuristic,
+        limits: {
+          enoughChars: opt.enoughChars ?? sc.enoughChars,
+          ...(opt.limits ?? {}),
+        },
+        ...(p.fetchImpl ? { fetchImpl: p.fetchImpl } : {}),
+        ...(opt.sleepImpl ? { sleepImpl: opt.sleepImpl } : {}),
+      })
+    },
     fillCardFromWiki: (o) => fillCardFromWiki({
       card,
       provider: providerFor('cardFill'),
       ...(p.fetchImpl ? { fetchImpl: p.fetchImpl } : {}),
       ...(o ?? {}),
     }),
+    /** 三级信源的登记表（界面用来渲染"依次取用"那一栏） */
+    sourceTiers: () => SOURCE_TIERS.map((t) => ({ id: t.id, label: t.label, note: t.note })),
     // ---- 启动器 ----
     listLaunchables, launchApp, resolveLaunchTarget: (q, items) => resolveLaunchTarget(q, items ?? listLaunchables().items),
     // ---- LLM 工具 ----

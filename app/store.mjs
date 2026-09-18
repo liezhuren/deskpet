@@ -25,6 +25,9 @@
 
 import { readFileSync, writeFileSync, renameSync, mkdirSync, existsSync, unlinkSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
+// ★ 搜索端点模板的**唯一事实来源**在 lore/sources.mjs —— 设置里只引用它。
+//   复制一份字符串常量就是"两处定义"，早晚会漂移（这个项目里已经栽过几次）。
+import { DEFAULT_SEARCH_TEMPLATE } from '../lore/sources.mjs'
 
 // ══════════════════════════════════════════════════════════════════
 // ★ 分用途模型
@@ -85,6 +88,15 @@ export const DEFAULT_SETTINGS = Object.freeze({
   watch: Object.freeze({ enabled: true, intervalMs: 1000, processes: [] }),
   // 启动器：登记过的游戏（自动发现 + 手动添加）
   launcher: Object.freeze({ favorites: [], lastLaunched: null, autoStartWatch: true, confirmBeforeLaunch: true }),
+  // ★ 资料信源：生成角色卡时按「官方 → 社区 Wiki → 搜索」依次取用
+  sources: Object.freeze({
+    officialUrls: [],       // 当前角色的官方页面（**官方不猜，只认这里给的**）
+    officialHosts: [],      // 该游戏的官方域名（用于把某个 URL 归类到官方）
+    communityBases: [],     // 社区 Wiki 站点（Fandom / wiki.gg / 萌娘 … 填站点地址）
+    enableSearch: true,     // 搜索引擎兜底（可关：它最不可靠）
+    searchTemplate: DEFAULT_SEARCH_TEMPLATE,
+    enoughChars: 600,       // 「够用即停」的阈值：累计到这么多字就不再问下一级
+  }),
 })
 
 const PURPOSE_PATHS = PURPOSE_IDS.flatMap((id) => LLM_PURPOSE_FIELDS.map((f) => `llm.purposes.${id}.${f}`))
@@ -97,6 +109,8 @@ export const SETTING_PATHS = Object.freeze([
   'pet.position', 'pet.clickThrough', 'pet.alwaysOnTop', 'pet.muted',
   'watch.enabled', 'watch.intervalMs', 'watch.processes',
   'launcher.favorites', 'launcher.lastLaunched', 'launcher.autoStartWatch', 'launcher.confirmBeforeLaunch',
+  'sources.officialUrls', 'sources.officialHosts', 'sources.communityBases',
+  'sources.enableSearch', 'sources.searchTemplate', 'sources.enoughChars',
 ])
 
 const LEVELS = ['conservative', 'moderate']
@@ -273,6 +287,42 @@ export function validateSettings(s) {
     }
   }
   if (s.game?.exePath != null) need(typeof s.game.exePath === 'string', 'game.exePath 必须是字符串或 null')
+
+  // ---- 资料信源 ----
+  const src = s.sources
+  if (src != null && typeof src !== 'object') {
+    errors.push('sources 必须是对象')
+  } else if (src) {
+    for (const k of ['officialUrls', 'officialHosts', 'communityBases']) {
+      if (src[k] == null) continue
+      need(Array.isArray(src[k]), `sources.${k} 必须是数组`)
+      if (Array.isArray(src[k])) {
+        for (const u of src[k]) {
+          if (typeof u !== 'string' || u.trim() === '') { errors.push(`sources.${k} 里的条目必须是非空字符串`); break }
+        }
+      }
+    }
+    if (src.enableSearch != null) need(typeof src.enableSearch === 'boolean', 'sources.enableSearch 必须是布尔值')
+    if (src.searchTemplate != null) {
+      need(typeof src.searchTemplate === 'string', 'sources.searchTemplate 必须是字符串')
+      // 模板必须含 {q}，否则拼出来的搜索 URL 永远一样（静默失效最难查）
+      if (typeof src.searchTemplate === 'string' && !src.searchTemplate.includes('{q}')) {
+        errors.push('sources.searchTemplate 必须含 {q} 占位符')
+      }
+    }
+    if (src.enoughChars != null) {
+      need(Number.isFinite(src.enoughChars) && src.enoughChars >= 0, 'sources.enoughChars 必须是非负数')
+      if (Number.isFinite(src.enoughChars) && src.enoughChars > 20000) {
+        warnings.push('sources.enoughChars 很大 ⇒ 基本等于"每一级都会跑"，搜索引擎那一级也会用上（它最不可靠）')
+      }
+    }
+    if (src.enableSearch === false && (src.communityBases ?? []).length === 0 && (src.officialUrls ?? []).length === 0) {
+      warnings.push('关掉了搜索引擎、又没配官方页面与社区 Wiki ⇒ 生成角色卡时**没有任何信源可用**')
+    }
+    if (src.enableSearch !== false && (src.searchTemplate ?? '') === '') {
+      warnings.push('sources.searchTemplate 为空 ⇒ 搜索这一级会退回内置默认端点')
+    }
+  }
   return { ok: errors.length === 0, errors, warnings }
 }
 

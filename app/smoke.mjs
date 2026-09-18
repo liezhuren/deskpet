@@ -188,6 +188,39 @@ app.whenReady().then(async () => {
     check('每个用途都带上了 provider 与来源', purposes.every((p) => typeof p.provider === 'string' && typeof p.source === 'string'))
     check('未登记用途退回默认并如实标注', runtime.llmConfig('不存在的用途').unknownPurpose === true)
 
+    // ═══ ★ 三级信源（官方 → 社区 Wiki → 搜索）═══
+    const tiers = runtime.sourceTiers()
+    check('三级信源的顺序就是优先级：官方 → 社区 Wiki → 搜索',
+      tiers.map((t) => t.id).join(',') === 'official,community,search', tiers.map((t) => t.label).join(' → '))
+    check('每一级都带中文名与说明（界面要显示）',
+      tiers.every((t) => t.label.length > 0 && t.note.length > 6))
+
+    // 信源配置的校验：搜索模板必须含 {q}（否则拼出来的 URL 永远一样，静默失效）
+    const badTpl = runtime.applySettings({ sources: { searchTemplate: '没有占位符' } })
+    check('搜索模板缺 {q} 会被拒绝（防止搜索静默失效）', badTpl.ok === false,
+      (badTpl.errors ?? []).join('；'))
+    const okTpl = runtime.applySettings({ sources: { searchTemplate: 'https://search.test/?q={q}' } })
+    check('合法模板可以存入设置', okTpl.ok === true, (okTpl.errors ?? []).join('；'))
+
+    // ★ 真实 fetch 路径的**失败降级**：三级都不可达时如实返回 none，绝不硬凑
+    //   （用 127.0.0.1:1 —— 连接立刻被拒，不会真的跑到外网）
+    const dead = await runtime.fillCardFromSources({
+      officialUrls: ['http://127.0.0.1:1/never'],
+      communityBases: [],
+      enableSearch: false,
+      card: draftCard({ name: '霞', game: 'smoke' }).card,
+    })
+    check('三级都拿不到 ⇒ source=none 且不出提议（不硬凑）',
+      dead.source === 'none' && (dead.proposals ?? []).length === 0,
+      `source=${dead.source} proposals=${(dead.proposals ?? []).length}`)
+    check('失败时逐级都有记录（哪一级跑了、为什么没料）',
+      (dead.tiers ?? []).length === 3 && (dead.notes ?? []).length > 0,
+      (dead.notes ?? []).join(' | '))
+    check('失败时说清了官方这一级的地址取不到',
+      (dead.notes ?? []).some((n) => n.includes('未取到正文')), (dead.notes ?? []).join(' | '))
+    // 收尾：把模板改回默认，免得影响后续界面自检
+    runtime.applySettings({ sources: { searchTemplate: 'https://html.duckduckgo.com/html/?q={q}' } })
+
     // ---- ★ 启动器页（走生产的 openWindow）----
     const launcherWin = ctx.openWindow('launcher')
     await settle(1600)
@@ -237,6 +270,34 @@ app.whenReady().then(async () => {
       await shoot(sWin2, 'settings-purposes')
     } else {
       check('设置页存在（分用途模型表要能在界面上验）', false, 'settings window missing')
+    }
+
+    // ---- ★ 人物卡页的信源面板（三级依次取用）----
+    const cWin2 = ctx.getCardWindow()
+    if (cWin2) {
+      const panel = await cWin2.webContents.executeJavaScript(`(() => {
+        const box = document.getElementById('srcBox')
+        return {
+          hasPanel: Boolean(box),
+          summary: box ? box.querySelector('summary').textContent : '',
+          hasOfficial: Boolean(document.getElementById('srcOfficial')),
+          hasCommunity: Boolean(document.getElementById('srcCommunity')),
+          hasSearch: Boolean(document.getElementById('srcSearch')),
+          hasEnough: Boolean(document.getElementById('srcEnough')),
+          hasTemplate: Boolean(document.getElementById('srcTemplate')),
+          hasReport: Boolean(document.getElementById('srcReport')),
+        }
+      })()`)
+      check('人物卡页有信源面板，且标题按顺序列出三级',
+        panel.hasPanel && panel.summary.includes('官方') && panel.summary.includes('社区 Wiki')
+        && panel.summary.includes('搜索'), panel.summary)
+      check('信源面板能配官方页面 / 社区站点 / 搜索开关与阈值 / 搜索模板',
+        panel.hasOfficial && panel.hasCommunity && panel.hasSearch && panel.hasEnough && panel.hasTemplate,
+        JSON.stringify(panel))
+      check('信源面板有逐级结果区（否则"依次取用"看不见）', panel.hasReport)
+      await cWin2.webContents.executeJavaScript("document.getElementById('srcBox').scrollIntoView({block:'start'}); window.scrollTo(0, document.getElementById('srcBox').getBoundingClientRect().top + window.scrollY - 8)")
+      await settle(400)
+      await shoot(cWin2, 'card-sources')
     }
 
     // ---- ★ 驱动人物卡页的填表流程，并截图（"界面上真能用"只有截图能证明）----
