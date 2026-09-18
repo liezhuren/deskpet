@@ -25,7 +25,8 @@ import { initState, applyEvents, countTurn, describeState } from '../core/person
 import { buildRequest } from '../dialogue/base.mjs'
 import { createDialogue } from '../dialogue/index.mjs'
 import {
-  createMemory, rememberEvents, remember, consolidate, recall, digest, markRecalled, forget, stats, startSession,
+  createMemory, rememberEvents, rememberAll, remember, consolidate, recall, digest, markRecalled, forget, stats, startSession,
+  judgeImportance, hashOf, MEMORY_DEFAULTS,
 } from '../core/memory.mjs'
 import { triggerFromEvent } from '../gameio/base.mjs'
 
@@ -261,6 +262,7 @@ export function endSession(session, opts = {}) {
 
   const { memory, summary, kept } = consolidate(s.memory, s.pendingEvents, {
     now, game: s.game, session: s.sessionId, durationMs: opts.durationMs,
+    dropHashes: opts.dropHashes,
   })
   s.memory = memory
   s.pendingEvents = []
@@ -269,10 +271,104 @@ export function endSession(session, opts = {}) {
   s.memory = pruned
   if (dropped.length) notes.push(`记忆库淘汰了 ${dropped.length} 条低权重条目`)
 
+  // ★ 记忆 V2：让「记忆评分」那个用途的模型给个体候选打一次分，低于门槛的不入长期记忆。
+  //   放在**异步版**（endSessionScored）里做，所以这个同步入口的行为完全没变 ——
+  //   既有调用点与测试都不受影响。
   if (summary) notes.push(`本局压缩成 1 条汇总 + ${kept.length} 条个体记忆`)
   else notes.push('本局没有可压缩的事件')
 
   return { session: s, summary, kept, notes }
+}
+
+/**
+ * ★ 一局结束（带记忆评分）：**先评分、后写入**，低分的不进长期记忆。
+ *
+ * ⚠ 顺序是这个函数存在的全部理由。第一版写成"先 endSession 落库，再拿 kept 去评分"，
+ *   结果是：候选一进库就与自身成为"重复 hash"，评分模型**一条都看不到**，
+ *   日志里只会出现「N 条与已有记忆同 hash ⇒ 直接强化（不评分）」——
+ *   功能看起来在跑，实际什么都没过滤。所以这里：
+ *     ① 先在**临时记忆库**上 dry-run 一次压缩，只为拿到"候选有哪些"
+ *     ② 让模型给候选打分
+ *     ③ 带着"要跳过的 hash"真正跑一遍 endSession（压缩逻辑仍然只有一处）
+ *
+ * @param {object} session
+ * @param {{now?:number, durationMs?:number, judgeProvider?:object, min?:number}} [opts]
+ * @returns {Promise<{session:object, summary:object|null, kept:object[], notes:string[],
+ *                    judged:number, filtered:number}>}
+ */
+export async function endSessionScored(session, opts = {}) {
+  const o = (opts && typeof opts === 'object') ? opts : {}
+  const now = Number.isFinite(o.now) ? o.now : session.at
+  if (!o.judgeProvider || (session.pendingEvents ?? []).length === 0) {
+    const base = endSession(session, { now: o.now, durationMs: o.durationMs })
+    const notes = [...base.notes]
+    if (base.kept.length && !o.judgeProvider) notes.push('没有可用的评分模型 ⇒ 按分型权重正常入库')
+    return { ...base, notes, judged: 0, filtered: 0 }
+  }
+
+  // ① dry-run：只为拿候选，不碰真实记忆库
+  const dry = consolidate(createMemory({ game: session.game }), session.pendingEvents, {
+    now, game: session.game, session: session.sessionId, durationMs: o.durationMs,
+  })
+  const candidates = dry.kept
+  if (candidates.length === 0) {
+    const base = endSession(session, { now: o.now, durationMs: o.durationMs })
+    return { ...base, notes: [...base.notes, '本局没有可评分的个体候选'], judged: 0, filtered: 0 }
+  }
+
+  // ② 评分
+  let scores = null
+  const judgeNotes = []
+  try {
+    const r = await judgeImportance(candidates, { provider: o.judgeProvider })
+    for (const n of r.notes) judgeNotes.push(n)
+    if (r.ok) scores = r.scores
+  } catch (e) {
+    judgeNotes.push(`记忆评分失败（${e.message}）⇒ 按分型权重正常入库`)
+  }
+
+  const min = Number.isFinite(o.min) ? o.min : MEMORY_DEFAULTS.llmJudgeMin
+  const dropHashes = new Set()
+  if (scores) {
+    candidates.forEach((c, i) => {
+      const s = scores[i]
+      if (s === null || s === undefined) return
+      if (s < min) dropHashes.add(hashOf(c.text, c.kind, c.game ?? session.game ?? ''))
+    })
+  }
+
+  // ③ 真正写入（带上"要跳过的 hash"）
+  //    刻意**不**用模型分数去改权重：权重已经由分型策略给定，而"评分"这一环
+  //    在需求里管的是**过滤**。多一套按分调权的逻辑只会让权重来源变模糊。
+  const base = endSession(session, { now: o.now, durationMs: o.durationMs, dropHashes })
+  const notes = [...base.notes, ...judgeNotes]
+  if (dropHashes.size) notes.push(`${dropHashes.size} 条低于门槛 ${min} ⇒ 不入长期记忆`)
+  return {
+    ...base,
+    notes,
+    judged: scores ? candidates.length : 0,
+    filtered: dropHashes.size,
+  }
+}
+
+/**
+ * ★ 「我闭嘴」：由**表达层/模型**主动取消待发言（对应 LLM 的 cancel 工具）。
+ *
+ * 与"外部活动打断"（`activity`）分开：那个是玩家动了，这个是角色自己判断不该说。
+ * 指标里也分开记（`canceledBySelf` vs `canceled`）——
+ * **"它学会闭嘴"与"它被打断"是两件不同的事**，混在一起就看不出它有没有在自我克制。
+ *
+ * @param {object} session
+ * @param {{now?:number, reason?:string}} [opts]
+ */
+export function cancelSpeech(session, opts = {}) {
+  const o = (opts && typeof opts === 'object') ? opts : {}
+  const at = Number.isFinite(o.now) ? o.now : session.at
+  const r = presenceStep(session.presence, { type: 'cancel', at, reason: o.reason }, session.policy)
+  return {
+    session: { ...session, at, presence: r.state, action: null },
+    notes: r.notes ?? [],
+  }
 }
 
 /** 退出之后仍能说上来点什么 —— 这是"带着记忆继续聊"的读取端。 */

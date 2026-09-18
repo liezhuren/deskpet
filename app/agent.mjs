@@ -15,7 +15,7 @@
 // ③ **读不到空闲时间 + 游戏在跑 ⇒ 视为专注（不说话）**。宁可漏说，不可打扰。        // arch:3
 
 import { join } from 'node:path'
-import { createSession, tick, utter, endSession, recallFor, describeSession } from '../agent/session.mjs'
+import { createSession, tick, utter, endSession, endSessionScored, cancelSpeech, recallFor, describeSession } from '../agent/session.mjs'
 import { createDialogue } from '../dialogue/index.mjs'
 import { normalizeCard, validateCard } from '../core/card.mjs'
 import { summarize as presenceSummary } from '../core/presence.mjs'
@@ -23,13 +23,19 @@ import { stats as memoryStats } from '../core/memory.mjs'
 import { discoverGames, inspect } from '../gameio/index.mjs'
 import { resolvePolicy } from '../core/presence.mjs'
 import { ensureAssets, actionsFor } from '../art/index.mjs'
-import { createStore, DEFAULT_SETTINGS, redactSettings } from './store.mjs'
+import { createStore, DEFAULT_SETTINGS, redactSettings, resolveLlmConfig, PURPOSE_IDS } from './store.mjs'
 import { createProbe, resolveProcessNames } from './probe.mjs'
 import { draftCard as makeDraft, draftGaps } from './cardgen.mjs'
-import { fetchLore } from '../lore/fetch.mjs'
-import { fillCardForm as runFillForm, applyFilledForm, fillForm } from '../lore/fill.mjs'
+import { fetchLore, fetchWiki } from '../lore/fetch.mjs'
+import { fillCardForm as runFillForm, applyFilledForm, fillForm, fillCardFromWiki } from '../lore/fill.mjs'
 import { modelFillablePaths, blankForm } from '../core/card-spec.mjs'
 import { createLlmProvider } from '../dialogue/llm.mjs'
+import { createToolRunner, missingHandlers } from './tools.mjs'
+import { TOOL_NAMES } from '../core/tools.mjs'
+import {
+  buildLaunchables, resolveLaunchTarget, launch as launchTarget,
+  steamLibraryRoots, matchWatchDir, LAUNCHER_DEFAULTS,
+} from './launcher.mjs'
 
 /** 动作名映射：时机引擎的 act / 说话的事件类别 → 素材层的动作 id。 */
 export function artActionFor({ presenceAction = null, speakKind = null } = {}) {
@@ -41,6 +47,29 @@ export function artActionFor({ presenceAction = null, speakKind = null } = {}) {
   }
   if (presenceAction === 'bored') return 'idleBored'
   return 'idle'
+}
+
+/** interact 工具的动作 → 桌宠动作 id。表意动作里"没有对应素材"的退回 idle。 */
+export const INTERACT_ACTION = Object.freeze({
+  greet: 'greeting',
+  nod: 'talk',
+  shake: 'worried',
+  approach: 'idle',
+  retreat: 'idle',
+  look: 'idle',
+  offer: 'happy',
+})
+
+/**
+ * 抚摸对人格状态的影响。**刻意只做正向的事**：亲密度上升、mood 变好。
+ * 这些字段只有确定性代码能改（模型不许直接写它），所以工具也只能通过这里影响它。
+ */
+function applyPet(persona, times) {
+  if (!persona || typeof persona !== 'object') return persona
+  const n = Number.isFinite(times) ? Math.max(1, Math.min(5, times)) : 1
+  const affinity = Math.min(1, (Number.isFinite(persona.affinity) ? persona.affinity : 0.5) + 0.03 * n)
+  const mood = Math.min(1, (Number.isFinite(persona.mood) ? persona.mood : 0.5) + 0.08 * n)
+  return { ...persona, affinity, mood, lastPetAt: null }
 }
 
 /**
@@ -78,7 +107,7 @@ export function createRuntime(p = {}) {
   function buildSession() {
     const memory = store.getMemory()
     const personaState = store.getPersona()
-    const dialogue = makeDialogue(settings)
+    const dialogue = makeDialogue()
     session = createSession({
       dir: settings.game.dir,
       game: gameKeyFor(settings.game.dir),
@@ -88,21 +117,50 @@ export function createRuntime(p = {}) {
       personaState: personaState ?? undefined,
       store: store.getWatch() ?? undefined,
       dialogue,
+      // ★ 记忆 V2：一局结束压缩时用「记忆评分」那个用途的模型给候选打分
+      judgeProvider: providerFor('memoryJudge'),
       now: now(),
     })
     return session
   }
 
-  function makeDialogue(s) {
-    const provider = s.llm?.provider === 'llm' ? 'llm' : 'template'
+  /**
+   * ★ 按用途取 provider 配置（分用途模型）。
+   * 「互动对话」走 dialogue、「填表」走 cardFill、「记忆评分」走 memoryJudge、
+   * 「工具调用」走 tools、「Wiki 抽取」走 wiki —— 没单独配的字段回落到默认 llm 配置。
+   */
+  function llmFor(purpose) {
+    return resolveLlmConfig(settings, purpose)
+  }
+
+  /**
+   * 造一个 provider（给非对话用途用：填表 / 评分 / 工具 / wiki）。
+   * ★ `p.providers` 可以按用途注入替身 —— 于是"评分过滤""Wiki 填表"这些
+   *   需要模型的路径都能离线测（否则只能真联网，那就等于没测）。
+   */
+  function providerFor(purpose) {
+    const injected = p.providers?.[purpose]
+    if (injected !== undefined) return injected
+    const c = llmFor(purpose)
+    if (c.provider !== 'llm') return null
+    return createLlmProvider({
+      preset: c.preset,
+      baseUrl: c.baseUrl || undefined,
+      model: c.model || undefined,
+      apiKey: c.apiKey || '',
+    })
+  }
+
+  function makeDialogue() {
+    const c = llmFor('dialogue')
     return createDialogue({
-      provider,
+      provider: c.provider === 'llm' ? 'llm' : 'template',
       fallback: 'template',
       providerOptions: {
-        preset: s.llm?.preset,
-        baseUrl: s.llm?.baseUrl || undefined,
-        model: s.llm?.model || undefined,
-        apiKey: s.llm?.apiKey || '',
+        preset: c.preset,
+        baseUrl: c.baseUrl || undefined,
+        model: c.model || undefined,
+        apiKey: c.apiKey || '',
       },
     })
   }
@@ -228,15 +286,143 @@ export function createRuntime(p = {}) {
     return { at: t, utterance, notes: r.notes }
   }
 
-  /** 结束当前这一局（退出游戏时调用）→ 压缩记忆。 */
-  function endCurrentSession(o = {}) {
+  /**
+   * 结束当前这一局（退出游戏时调用）→ 压缩记忆。
+   * ★ 用异步版 endSessionScored：让「记忆评分」用途的模型给个体候选打分过滤。
+   *   没有配评分模型时它会直接返回（不联网），所以这条路径在默认配置下也是即时的。
+   */
+  async function endCurrentSession(o = {}) {
     if (!session) return { summary: null }
-    const r = endSession(session, { now: o.now ?? now(), durationMs: o.durationMs })
+    const r = await endSessionScored(session, {
+      now: o.now ?? now(),
+      durationMs: o.durationMs,
+      judgeProvider: providerFor('memoryJudge'),
+    })
     session = r.session
     persist()
-    emit({ type: 'session-end', summary: r.summary })
+    emit({ type: 'session-end', summary: r.summary, judged: r.judged, filtered: r.filtered })
     return r
   }
+
+  // ══════════════════════════════════════════════════════════════════
+  // ★ 启动器（⑤）与 LLM 工具（①）
+  // ══════════════════════════════════════════════════════════════════
+  // 启动器负责"发现 + 启动"，工具层负责"模型怎么请求它"。
+  // `launch_app` 是两者唯一的交点，而它是 confirm 级工具 —— 也就是说：
+  // **模型不能自己启动任何东西，它只能发起一个待确认请求。**
+
+  /** 收集可启动清单（收藏 + Steam 库 + 本机游戏目录）。纯发现，不启动。 */
+  function listLaunchables(o = {}) {
+    const favorites = settings.launcher?.favorites ?? []
+    const roots = []
+    const notes = []
+    if (o.includeSteam !== false) {
+      try {
+        const st = steamLibraryRoots(o.steamOpts ?? {})
+        roots.push(...st.roots)
+        notes.push(...st.notes)
+      } catch (e) { notes.push(`找 Steam 库失败：${e.message}`) }
+    }
+    const found = buildLaunchables({ favorites, roots, maxPerRoot: o.maxPerRoot ?? LAUNCHER_DEFAULTS.maxPerRoot })
+    for (const n of found.notes) notes.push(n)
+    return { items: found.items, notes, favorites: favorites.length, roots: roots.length }
+  }
+
+  /** 启动一个**登记过**的目标。confirmRequired 由设置决定；未批准一律拒绝。 */
+  function launchApp(req = {}, o = {}) {
+    const list = o.items ?? listLaunchables().items
+    const r = launchTarget(req, {
+      items: list,
+      approve: o.approve === true,
+      confirmRequired: settings.launcher?.confirmBeforeLaunch !== false,
+      spawnImpl: o.spawnImpl,
+      existsImpl: o.existsImpl,
+    })
+    if (r.ok) {
+      store.setSettings({ launcher: { lastLaunched: r.item.id } })
+      settings = store.getSettings()
+      // 启动成功后：把监视目录对到这个游戏（对不上就说对不上，不硬指一个）
+      if (settings.launcher?.autoStartWatch !== false && o.autoWatch !== false) {
+        const discovered = discoverGames({ limit: 200 })
+        const dir = matchWatchDir(r.item.name, discovered)
+        if (dir) {
+          store.setSettings({ game: { dir, exePath: r.item.exe } })
+          settings = store.getSettings()
+          session = null
+          r.notes.push(`已开始监视：${dir}`)
+        } else {
+          r.notes.push('没找到对应的存档目录 ⇒ 暂不自动监视（可以在设置里手动指定）')
+        }
+      }
+    }
+    emit({ type: 'launch', ok: r.ok, name: r.item?.name ?? null, needsConfirm: r.needsConfirm === true })
+    return r
+  }
+
+  /**
+   * ★ 6 个工具的处理器。
+   * 默认实现只做"运行时能做的事"（改人格状态、发动作、记审计）；
+   * **真正碰窗口的动作（move_to）由 main.mjs 覆盖** —— 因为只有它认识 BrowserWindow。
+   * 覆盖方式：createRuntime({ toolHandlers: { move_to } })。没覆盖时 move_to 只发一个
+   * `pet:move` 事件，渲染端也可以自己处理。
+   */
+  const defaultToolHandlers = {
+    move_to: (args) => {
+      emit({ type: 'pet:move', x: args.x, y: args.y, reason: args.reason ?? null })
+      lastAction = { action: 'idle', at: now(), reason: 'tool:move_to' }
+      return { requested: { x: args.x, y: args.y }, note: '已请求移动（真正挪窗口由外壳执行）' }
+    },
+    pet: (args) => {
+      const times = args.times ?? 1
+      if (session) {
+        // 抚摸是**正向**互动：亲密度上升、mood 变好（这些字段只有确定性代码能改）
+        session = { ...session, persona: applyPet(session.persona, times) }
+      }
+      lastAction = { action: 'happy', at: now(), reason: `tool:pet×${times}` }
+      emit({ type: 'pet:action', action: 'happy', reason: 'pet' })
+      return { times, affinity: session?.persona?.affinity ?? null }
+    },
+    interact: (args) => {
+      const action = INTERACT_ACTION[args.kind] ?? 'idle'
+      lastAction = { action, at: now(), reason: `tool:interact:${args.kind}` }
+      emit({ type: 'pet:action', action, reason: `interact:${args.kind}`, note: args.note ?? null })
+      return { kind: args.kind, action, note: args.note ?? null }
+    },
+    cancel: (args) => {
+      if (!session) return { canceled: false, note: '还没有会话' }
+      const r = cancelSpeech(session, { now: now(), reason: args.reason ?? 'tool:cancel' })
+      session = r.session
+      lastAction = { action: 'idle', at: now(), reason: 'tool:cancel' }
+      emit({ type: 'pet:action', action: 'idle', reason: 'cancel' })
+      return { canceled: true, notes: r.notes }
+    },
+    launch_app: (args) => launchApp({ target: args.target, args: args.args }, { approve: true }),
+    generate_character_card: async (args) => {
+      // ★ 这里**只产出提议**，不落盘 —— 落盘要用户在人物卡页逐格确认。
+      //   工具能做的上限就是"把表填好端上来"。
+      const base = draftCardFor({ name: args.name, game: args.game, temperament: args.temperament })
+      if (!base.ok) return { ok: false, errors: base.errors }
+      const filled = args.wikiUrl
+        ? await fillCardFromWiki({ url: args.wikiUrl, card: base.card, provider: providerFor('cardFill'), name: args.name })
+        : await runFillForm({ lore: args.lore ?? '', card: base.card, name: args.name, provider: providerFor('cardFill') })
+      emit({ type: 'card:proposed', source: filled.source, slots: filled.proposals.length })
+      return {
+        ok: filled.proposals.length > 0,
+        source: filled.source,
+        proposals: filled.proposals.length,
+        rejected: filled.rejected.length,
+        notes: filled.notes.slice(0, 6),
+        hint: '提议已生成，需要在「人物卡」页逐格确认后才会写入',
+      }
+    },
+  }
+
+  const toolHandlers = { ...defaultToolHandlers, ...(p.toolHandlers ?? {}) }
+  const toolRunner = createToolRunner({
+    handlers: toolHandlers,
+    approve: typeof p.approveTool === 'function' ? p.approveTool : undefined,
+    now: () => now(),
+  })
 
   /** 给界面用的快照。**密钥一律脱敏。** */
   function snapshot() {
@@ -294,13 +480,7 @@ export function createRuntime(p = {}) {
 
   /** 造表达层用的 provider（填表与说话共用配置）。 */
   function makeLlmProvider() {
-    if (settings.llm?.provider !== 'llm') return null
-    return createLlmProvider({
-      preset: settings.llm.preset,
-      baseUrl: settings.llm.baseUrl || undefined,
-      model: settings.llm.model || undefined,
-      apiKey: settings.llm.apiKey || '',
-    })
+    return providerFor('cardFill')
   }
 
   /**
@@ -426,12 +606,24 @@ export function createRuntime(p = {}) {
     buildSession()
     emit({ type: 'started', intervalMs: ms })
   }
+  /**
+   * 退出前收尾。**刻意走同步路径**（不调模型评分）：
+   *   退出时进程可能随时结束，异步的评分+落盘不保证跑得完 ——
+   *   而"玩了几小时的记忆"绝不能因为一个可选的模型调用没来得及而丢掉。
+   *   所以这里用同步的 endSession：压缩、写盘一步到位，宁可少一层过滤。
+   *   （游戏正常退出、应用还活着时走的是 endCurrentSession，那条会带评分。）
+   */
   function stop() {
     if (timer) { clearIntervalImpl(timer); timer = null }
-    // ★ 退出前**结束当前这一局** —— 否则本局攒下的事件永远不会被压成记忆
-    //   （记忆只在一局结束时写；应用一关，那几个小时的经历就没了）。
-    //   这不是"顺手清理"，是数据能不能留下的分界线。
-    try { if (session) endCurrentSession({ now: now() }) } catch { /* 退出时不因为收尾失败而卡住 */ }
+    try {
+      if (session) {
+        const r = endSession(session, { now: now() })
+        session = r.session
+        emit({ type: 'session-end', summary: r.summary, judged: 0, filtered: 0, sync: true })
+      }
+    } catch (e) {
+      diag.errors.push({ at: now(), where: 'stop', message: e.message })
+    }
     persist()
     emit({ type: 'stopped' })
   }
@@ -440,6 +632,29 @@ export function createRuntime(p = {}) {
   return {
     pump, manual, endCurrentSession, snapshot, applySettings, setCard, validateCard: validateCardOnly, buildArt,
     draftCard: draftCardFor, cardForm, fetchLore: fetchLoreText, fillCard, applyFill,
+    // ⚠ 注入的 fetchImpl 必须**穿过这一层传下去** —— 否则"离线可跑"的承诺在
+    //   wiki 这条路上直接失效（旧的 fetchLore 包装传了、新的两个忘了，真踩过）。
+    fetchWiki: (url, o) => fetchWiki(url, {
+      name: card?.name,
+      ...(p.fetchImpl ? { fetchImpl: p.fetchImpl } : {}),
+      ...(o ?? {}),
+    }),
+    fillCardFromWiki: (o) => fillCardFromWiki({
+      card,
+      provider: providerFor('cardFill'),
+      ...(p.fetchImpl ? { fetchImpl: p.fetchImpl } : {}),
+      ...(o ?? {}),
+    }),
+    // ---- 启动器 ----
+    listLaunchables, launchApp, resolveLaunchTarget: (q, items) => resolveLaunchTarget(q, items ?? listLaunchables().items),
+    // ---- LLM 工具 ----
+    runTool: (call) => toolRunner.run(call),
+    approveTool: (id) => toolRunner.approvePending(id),
+    rejectTool: (id, reason) => toolRunner.rejectPending(id, reason),
+    toolState: () => ({ pending: toolRunner.pending(), history: toolRunner.history(20), stats: toolRunner.stats(), missing: missingHandlers(toolHandlers), total: TOOL_NAMES.length }),
+    // ---- 分用途模型 ----
+    llmConfig: (purpose) => llmFor(purpose),
+    purposes: () => PURPOSE_IDS.map((id) => ({ id, ...llmFor(id) })),
     frameFor, start, stop, on, diagnostics,
     listGames: (o) => discoverGames(o),
     inspectGame: (dir, o) => inspect(dir, o),

@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src 'self' file: data:; style-src 'self' 'unsafe-inline'; script-src 'self'" />
+  <title>启动器</title>
+  <link rel="stylesheet" href="common.css" />
+</head>
+<body>
+  <header>
+    <h1>启动器</h1>
+    <span class="pill" id="sum">—</span>
+    <span class="spacer"></span>
+    <button id="btnCards" class="ghost">人物卡…</button>
+    <button id="btnSettings" class="ghost">设置…</button>
+    <button id="btnClose" class="ghost">关闭</button>
+  </header>
+
+  <main>
+    <!-- ① 待你确认的请求（模型的"手"要经你点头） -->
+    <section>
+      <h2>① 待确认的请求</h2>
+      <p class="hint">
+        桌宠可以调用工具，但<strong>会动到你电脑之外的动作（启动程序、改角色卡）必须先经你确认</strong>。
+        这里显示的就是它想做的事 —— 拒绝也是有用的信息，会被记进审计。
+      </p>
+      <div id="pending"></div>
+    </section>
+
+    <!-- ② 启动器 -->
+    <section>
+      <h2>② 可启动的游戏</h2>
+      <div class="row tight">
+        <button id="btnScan" class="primary">扫描（收藏 + Steam 库）</button>
+        <label class="inline"><input id="optSteam" type="checkbox" checked /> 扫 Steam 库</label>
+        <span class="msg" id="scanMsg"></span>
+      </div>
+      <div id="launchables" class="scroll"></div>
+      <p class="hint">
+        启动前会再问一次（可在设置里关掉）。<strong>只会启动这份清单里的东西</strong> ——
+        桌宠没法用任意路径启动程序。
+      </p>
+    </section>
+
+    <!-- ③ 本机游戏（存档/日志目录）→ 加进启动器 + 设为监视对象 -->
+    <section>
+      <h2>③ 本机的游戏存档目录</h2>
+      <div class="row tight">
+        <button id="btnGames">列出可识别的游戏</button>
+        <span class="msg" id="gamesMsg"></span>
+      </div>
+      <div id="games" class="scroll"></div>
+      <p class="hint">点一行可以把它设为<strong>监视对象</strong>（读日志与存档）。没有 exe 的也能监视。</p>
+    </section>
+
+    <!-- ④ 工具审计 -->
+    <section>
+      <h2>④ 工具调用记录</h2>
+      <dl class="kv" id="toolStats"></dl>
+      <div id="toolHistory" class="scroll"></div>
+      <p class="hint">
+        <strong>被拒与被限流也记在这里</strong> —— 那是"模型想干但被拦住"的证据，比成功记录更有信息量。
+      </p>
+    </section>
+  </main>
+
+  <script src="launcher.js"></script>
+</body>
+</html>

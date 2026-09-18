@@ -57,6 +57,9 @@ function collect(settings) {
   const key = $('llmApiKey').value.trim()
   if (key !== '') patch.llm.apiKey = key
   else if (settings.llm.apiKeySet === false) patch.llm.apiKey = ''
+  // 分用途覆盖（只提交用户真填了的字段）
+  const purposes = collectPurposes()
+  if (Object.keys(purposes).length) patch.llm.purposes = purposes
   return patch
 }
 
@@ -64,6 +67,100 @@ function show(id, text, kind = '') {
   const el = $(id)
   el.className = `msg ${kind}`
   el.textContent = text
+}
+
+// ---------- 分用途模型 ----------
+//
+// 表格按用途渲染：每行可以覆盖 provider / model / baseUrl / apiKey，还可以整行关掉。
+// 关键设计：**留空 = 回落默认**（而不是"清空"）。所以空输入框不会被提交 ——
+// 否则用户想"只改 model"就会顺手把默认的 key 清掉。
+
+function purposeNote(id) {
+  const notes = {
+    dialogue: '互动对话 —— 最频繁，适合小模型',
+    cardFill: '角色卡填表 —— 要准，可以慢',
+    memoryJudge: '记忆评分 —— 只判轻重，可用最便宜的',
+    tools: '工具调用 —— 输出必须是合法 JSON',
+    wiki: 'Wiki 抽取 —— 上下文长，适合长窗口模型',
+  }
+  return notes[id] ?? ''
+}
+
+async function refreshPurposes() {
+  const list = await petApi.listPurposes()
+  const wrap = $('purposeRows')
+  wrap.textContent = ''
+  const t = document.createElement('table')
+  const thead = document.createElement('thead')
+  thead.innerHTML = '<tr><th>用途</th><th>生效 provider</th><th>来源</th><th>model 覆盖</th><th>baseUrl 覆盖</th><th>apiKey</th><th>关掉</th></tr>'
+  t.appendChild(thead)
+  const tb = document.createElement('tbody')
+  for (const p of list) {
+    const tr = document.createElement('tr')
+
+    const tdName = document.createElement('td')
+    const b = document.createElement('b')
+    b.textContent = p.id
+    const note = document.createElement('div')
+    note.className = 'hint'
+    note.style.margin = '0'
+    note.textContent = purposeNote(p.id)
+    tdName.append(b, note)
+
+    const tdProv = document.createElement('td')
+    tdProv.textContent = p.provider
+    tdProv.className = 'mono'
+
+    const tdSrc = document.createElement('td')
+    tdSrc.textContent = p.source
+    tdSrc.className = 'mono'
+
+    const mkInput = (field, placeholder) => {
+      const td = document.createElement('td')
+      const inp = document.createElement('input')
+      inp.dataset.purpose = p.id
+      inp.dataset.field = field
+      inp.placeholder = placeholder
+      inp.className = 'mono'
+      td.appendChild(inp)
+      return td
+    }
+    tr.append(
+      tdName, tdProv, tdSrc,
+      mkInput('model', p.model || '（用默认）'),
+      mkInput('baseUrl', '（用默认）'),
+      mkInput('apiKey', p.apiKeySet ? `已保存（${p.apiKey}），留空不改` : '（无）'),
+    )
+
+    const tdOff = document.createElement('td')
+    const off = document.createElement('input')
+    off.type = 'checkbox'
+    off.dataset.purpose = p.id
+    off.dataset.field = 'enabled'
+    off.checked = p.source === 'disabled'
+    tdOff.appendChild(off)
+    tr.appendChild(tdOff)
+
+    tb.appendChild(tr)
+  }
+  t.appendChild(tb)
+  wrap.appendChild(t)
+  return list
+}
+
+/** 收集用途补丁。**只提交填了东西的字段**（留空 = 回落默认，不是清空）。 */
+function collectPurposes() {
+  const out = {}
+  for (const el of document.querySelectorAll('#purposeRows input')) {
+    const id = el.dataset.purpose
+    const f = el.dataset.field
+    if (!id || !f) continue
+    out[id] = out[id] ?? {}
+    if (f === 'enabled') { out[id].enabled = el.checked; continue }
+    const v = String(el.value ?? '').trim()
+    if (v !== '') out[id][f] = v
+  }
+  return out
 }
 
 // ---------- 检测游戏 ----------
@@ -166,8 +263,14 @@ $('btnSave').addEventListener('click', async () => {
   const w = r.warnings?.length ? `\n注意：\n${r.warnings.join('\n')}` : ''
   show('saveMsg', `已保存${w}`, r.warnings?.length ? 'warn' : 'ok')
   refreshDiag()
+  // 保存后重新渲染用途表：让"生效 provider / 来源"立刻反映新配置
+  refreshPurposes().then(() => show('purposeMsg', '已按新配置重算', 'ok')).catch(() => {})
 })
+
+$('btnPurposes').addEventListener('click', () => refreshPurposes().catch((e) => show('purposeMsg', e.message, 'err')))
 
 petApi.onEvent(() => { /* 主进程事件到达时刷新诊断数字 */ refreshDiag().catch(() => {}) })
 
-refreshDiag().catch((e) => show('saveMsg', `加载失败：${e.message}`, 'err'))
+refreshDiag()
+  .then(() => refreshPurposes())
+  .catch((e) => show('saveMsg', `加载失败：${e.message}`, 'err'))

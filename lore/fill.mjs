@@ -29,6 +29,7 @@ import {
 import {
   verifyProposals, applyProposals, mergeProposals, proposeHeuristic,
 } from './propose.mjs'
+import { fetchWiki } from './fetch.mjs'
 
 /** 表的格式标识（写进表里，便于识别与将来的迁移）。 */
 export const FORM_FORMAT = `game-pet-agent/form@${CARD_VERSION}`
@@ -268,6 +269,42 @@ export async function fillCardForm(p = {}) {
   notes.push(p.forceHeuristic ? '按请求使用启发式填表' : '没有可用的模型 ⇒ 用启发式填表')
   const h = heuristicFill(map, lore)
   return { form: map, parsed: null, proposals: h.proposals, rejected: h.rejected, source: 'heuristic', notes: [...notes, ...h.notes] }
+}
+
+/**
+ * ★ Wiki 管线接进填表流程：抓页面（含子页）→ 合并 → 出表并填。
+ *
+ * 只是把 `fetchWiki` 与 `fillCardForm` 组合起来，**不重复实现任何一步** ——
+ * 于是"抓取"与"填表"各自的行为与边界仍然只有一处定义。
+ * 抓不到正文时**不硬凑**：直接把失败原因带回去，让界面显示"这一页没抓到"。
+ *
+ * @param {{url:string, card?:object, provider?:object, name?:string, forceHeuristic?:boolean,
+ *          fetchImpl?:Function, sleepImpl?:Function, wiki?:object}} p
+ * @returns {Promise<object>} 同 fillCardForm，另加 `wiki` 字段（逐页的成功/失败与说明）
+ */
+export async function fillCardFromWiki(p = {}) {
+  const o = (p && typeof p === 'object') ? p : {}
+  const fetched = await fetchWiki(o.url, {
+    ...(o.wiki && typeof o.wiki === 'object' ? o.wiki : {}),
+    name: o.name ?? o.card?.name,
+    ...(o.fetchImpl ? { fetchImpl: o.fetchImpl } : {}),
+    ...(o.sleepImpl ? { sleepImpl: o.sleepImpl } : {}),
+  })
+  if (!fetched.ok) {
+    return {
+      form: fillForm(), parsed: null, proposals: [], rejected: [],
+      source: 'none', wiki: fetched,
+      notes: [`Wiki 抓取没拿到正文：${fetched.error}`, ...fetched.notes],
+    }
+  }
+  const filled = await fillCardForm({
+    lore: fetched.text,
+    card: o.card,
+    provider: o.provider,
+    name: o.name ?? o.card?.name,
+    forceHeuristic: o.forceHeuristic === true,
+  })
+  return { ...filled, wiki: fetched, notes: [...fetched.notes, ...filled.notes] }
 }
 
 /** 启发式填表：把 proposeHeuristic 的输出**投影到同一张表上**，于是两条路下游完全一致。 */

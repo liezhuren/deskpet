@@ -503,7 +503,8 @@ test('★ endCurrentSession 会把这一局压成记忆并落盘', async () => {
     clock = T0 + min(5)
     await runtime.pump({ now: clock })
 
-    const r = runtime.endCurrentSession({ now: T0 + 3600_000, durationMs: 3600_000 })
+    // ★ endCurrentSession 现在是 async（内部会调「记忆评分」用途的模型打分过滤）
+    const r = await runtime.endCurrentSession({ now: T0 + 3600_000, durationMs: 3600_000 })
     assert.ok(r.summary, '应当产出汇总')
     assert.match(r.summary.text, /这一局/)
     const mem = store.getMemory()

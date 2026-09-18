@@ -15,6 +15,14 @@ const CHANNELS = [
   'settings:set', 'card:set', 'card:get', 'card:validate', 'art:build',
   // 填表式生成：出表 → 抓取 → 填 → 逐格确认 → 写入
   'card:draft', 'card:form', 'lore:fetch', 'card:fill', 'card:apply',
+  // ★ LLM 工具（执行 / 确认 / 拒绝 / 审计）
+  'tool:run', 'tool:approve', 'tool:reject', 'tool:state',
+  // ★ 启动器
+  'launcher:list', 'launcher:launch', 'launcher:resolve', 'launcher:favorite',
+  // ★ 分用途模型
+  'llm:purposes', 'llm:config',
+  // ★ Wiki 管线
+  'wiki:fetch', 'wiki:fill',
   'games:list', 'game:inspect', 'game:patterns',
   'diag', 'pet:interactive', 'pet:move', 'pet:speak',
   'window:open', 'window:close',
@@ -60,6 +68,30 @@ contextBridge.exposeInMainWorld('petApi', {
   diag: () => invoke('diag'),
   openWindow: (which) => invoke('window:open', which),
   closeWindow: () => invoke('window:close'),
+
+  // ---- ★ LLM 工具 ----
+  /** 执行一次工具调用（需要确认的会被挂起，返回 needsConfirm + pendingId） */
+  runTool: (call) => invoke('tool:run', call ?? {}),
+  /** 批准一条待确认的调用 */
+  approveTool: (id) => invoke('tool:approve', id),
+  /** 拒绝一条待确认的调用 */
+  rejectTool: (id, reason) => invoke('tool:reject', id, reason ?? null),
+  /** 待确认 / 审计历史 / 统计 */
+  toolState: () => invoke('tool:state'),
+
+  // ---- ★ 启动器 ----
+  listLaunchables: (o) => invoke('launcher:list', o ?? {}),
+  launchApp: (req) => invoke('launcher:launch', req ?? {}),
+  resolveLaunchTarget: (q) => invoke('launcher:resolve', q),
+  toggleFavorite: (entry) => invoke('launcher:favorite', entry ?? {}),
+
+  // ---- ★ 分用途模型 ----
+  listPurposes: () => invoke('llm:purposes'),
+  llmConfig: (purpose) => invoke('llm:config', purpose),
+
+  // ---- ★ Wiki 管线 ----
+  fetchWiki: (url, o) => invoke('wiki:fetch', url, o ?? {}),
+  fillCardFromWiki: (o) => invoke('wiki:fill', o ?? {}),
 
   /** 鼠标是否压在桌宠身上 —— 决定"穿透点击"开关（见 main.mjs） */
   setInteractive: (v) => invoke('pet:interactive', v === true),

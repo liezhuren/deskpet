@@ -86,6 +86,19 @@
         没填 key 也能跑通全链路 —— 会退回模板档，而不是报错。
       </p>
       <div class="msg" id="llmMsg"></div>
+
+      <h2 style="margin-top:14px">分用途模型</h2>
+      <p class="hint">
+        模型在这个项目里干的是<strong>性质完全不同的活</strong>：说话很频繁（要小、要快），
+        填角色卡要准（可以慢），给记忆评分只需判轻重（能用最便宜的），挑工具必须稳。
+        用同一个模型干这五件事，必然要么贵得离谱、要么在该稳的地方不稳。
+        <strong>没填的字段会回落到上面的默认配置</strong>；某个用途关掉之后会强制用模板档（不会被默认配置兜回来）。
+      </p>
+      <div class="scroll" id="purposeRows"></div>
+      <div class="row tight" style="margin-top:8px">
+        <button id="btnPurposes">刷新配置</button>
+        <span class="msg" id="purposeMsg"></span>
+      </div>
     </section>
 
     <!-- ③ 桌宠窗 -->
@@ -96,7 +109,7 @@
         <label class="inline"><input id="muted" type="checkbox" /> 静音模式（不说话，只做动作）</label>
       </div>
       <p class="hint">
-        桌宠窗默认**穿透点击**：指针压在它身上时才可点，其他位置的点会穿到游戏里。
+        桌宠窗默认<strong>穿透点击</strong>：指针压在它身上时才可点，其他位置的点会穿到游戏里。
         拖动它即可移动；单击 = 主动搭话；双击打开本页；右键打开人物卡页。
       </p>
     </section>

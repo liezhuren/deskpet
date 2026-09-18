@@ -39,6 +39,7 @@ const RENDERER = join(HERE, 'renderer')
 let petWin = null
 let settingsWin = null
 let cardWin = null
+let launcherWin = null
 let runtime = null
 let timer = null
 let probeRef = null
@@ -68,7 +69,14 @@ export async function bootstrap(opts = {}) {
     } catch { return null }
   })
 
-  runtime = createRuntime({ store, probe })
+  runtime = createRuntime({
+    store,
+    probe,
+    // ★ 只有外壳认识 BrowserWindow，所以 move_to 的**真实实现**在这里注入。
+    //   运行时里的默认实现只发一个事件；工具契约、限流、确认、审计都在
+    //   core/tools.mjs + app/tools.mjs 里，这里只补最后一步（真的挪窗口）。
+    toolHandlers: { move_to: (args) => movePetWindow(args) },
+  })
   runtime.on((ev) => broadcast(ev))
 
   registerIpc({ store, probe })
@@ -85,13 +93,37 @@ export async function bootstrap(opts = {}) {
     stop() {
       if (runtime) runtime.stop()
       timer = null
-      for (const w of [petWin, settingsWin, cardWin]) { if (w && !w.isDestroyed()) w.destroy() }
-      petWin = settingsWin = cardWin = null
+      for (const w of [petWin, settingsWin, cardWin, launcherWin]) { if (w && !w.isDestroyed()) w.destroy() }
+      petWin = settingsWin = cardWin = launcherWin = null
     },
   }
 }
 
 // ---------- 窗口 ----------
+
+/**
+ * ★ `move_to` 工具的真实实现：把桌宠窗口挪到 (x, y)，并**钳制在可见范围内**。
+ *
+ * 为什么必须钳制：坐标是**模型给的**。模型完全可能算出 (99999, -500) 这种值 ——
+ * 不钳的话桌宠就被挪到屏幕外，用户看到的是"桌宠消失了"，而且他自己找不回来。
+ * 所以无论调用方是谁（模型/界面/用户），这一层都保证"它一定还在屏幕上"。
+ *
+ * @returns {{x:number, y:number, clamped:boolean, requested:{x:number,y:number}}}
+ */
+export function movePetWindow(args = {}) {
+  const w = petWin && !petWin.isDestroyed() ? petWin : null
+  const requested = { x: Math.round(Number(args.x) || 0), y: Math.round(Number(args.y) || 0) }
+  if (!w) return { ...requested, clamped: false, note: '桌宠窗不存在' }
+  const [W, H] = w.getSize()
+  const disp = screen.getDisplayNearestPoint({ x: requested.x, y: requested.y })
+  const area = disp.workArea
+  // 至少留 40px 在屏幕内，否则用户根本抓不到它
+  const keep = 40
+  const x = Math.min(Math.max(requested.x, area.x - W + keep), area.x + area.width - keep)
+  const y = Math.min(Math.max(requested.y, area.y - H + keep), area.y + area.height - keep)
+  w.setPosition(x, y)
+  return { x, y, clamped: x !== requested.x || y !== requested.y, requested }
+}
 
 export function createPetWindow(store, opts = {}) {
   const s = store.getSettings()
@@ -144,13 +176,17 @@ export function createPetWindow(store, opts = {}) {
 }
 
 export function openWindow(which) {
-  const existing = which === 'settings' ? settingsWin : which === 'card' ? cardWin : null
-  if (existing && !existing.isDestroyed()) { existing.focus(); return existing }
   const isSettings = which === 'settings'
+  const isCard = which === 'card'
+  const existing = isSettings ? settingsWin : isCard ? cardWin : launcherWin
+  if (existing && !existing.isDestroyed()) { existing.focus(); return existing }
+  const size = isSettings ? [720, 760] : isCard ? [860, 780] : [900, 720]
+  const title = isSettings ? '桌宠设置' : isCard ? '人物卡' : '启动器'
+  const file = isSettings ? 'settings.html' : isCard ? 'card.html' : 'launcher.html'
   const win = new BrowserWindow({
-    width: isSettings ? 720 : 860,
-    height: isSettings ? 720 : 780,
-    title: isSettings ? '桌宠设置' : '人物卡',
+    width: size[0],
+    height: size[1],
+    title,
     backgroundColor: '#14161c',
     webPreferences: {
       preload: join(HERE, 'preload.cjs'),
@@ -159,14 +195,20 @@ export function openWindow(which) {
       sandbox: false,
     },
   })
-  win.loadFile(join(RENDERER, isSettings ? 'settings.html' : 'card.html'))
-  win.on('closed', () => { if (isSettings) settingsWin = null; else cardWin = null })
-  if (isSettings) settingsWin = win; else cardWin = win
+  win.loadFile(join(RENDERER, file))
+  win.on('closed', () => {
+    if (isSettings) settingsWin = null
+    else if (isCard) cardWin = null
+    else launcherWin = null
+  })
+  if (isSettings) settingsWin = win
+  else if (isCard) cardWin = win
+  else launcherWin = win
   return win
 }
 
 function broadcast(ev) {
-  for (const w of [petWin, settingsWin, cardWin]) {
+  for (const w of [petWin, settingsWin, cardWin, launcherWin]) {
     if (w && !w.isDestroyed()) w.webContents.send('pet:event', ev)
   }
 }
@@ -220,7 +262,9 @@ export function registerIpc({ store, probe }) {
       pet: Boolean(petWin && !petWin.isDestroyed()),
       settings: Boolean(settingsWin && !settingsWin.isDestroyed()),
       card: Boolean(cardWin && !cardWin.isDestroyed()),
+      launcher: Boolean(launcherWin && !launcherWin.isDestroyed()),
     },
+    tools: runtime.toolState ? runtime.toolState().stats : null,
   }))
 
   handle('pet:interactive', (on) => {
@@ -238,6 +282,38 @@ export function registerIpc({ store, probe }) {
     if (w && !w.isDestroyed()) w.close()
     return true
   })
+
+  // ---- ★ LLM 工具（①）----
+  handle('tool:run', (call) => runtime.runTool(call ?? {}))
+  handle('tool:approve', (id) => runtime.approveTool(id))
+  handle('tool:reject', (id, reason) => runtime.rejectTool(id, reason))
+  handle('tool:state', () => runtime.toolState())
+
+  // ---- ★ 启动器（⑤）----
+  handle('launcher:list', (o) => runtime.listLaunchables(o ?? {}))
+  handle('launcher:launch', (req) => runtime.launchApp(req ?? {}))
+  handle('launcher:resolve', (q) => runtime.resolveLaunchTarget(q))
+  handle('launcher:favorite', (entry) => {
+    // 收藏/取消收藏一个游戏目录（界面上的"加到启动器"）
+    const cur = store.getSettings().launcher?.favorites ?? []
+    const dir = entry?.dir
+    if (typeof dir !== 'string' || dir === '') return { ok: false, error: '缺少目录' }
+    const key = (d) => String(d).replace(/[\\/]+/g, '/').replace(/\/+$/, '').toLowerCase()
+    const exists = cur.some((f) => key(f.dir) === key(dir))
+    const next = exists
+      ? cur.filter((f) => key(f.dir) !== key(dir))
+      : [...cur, { dir, name: entry.name ?? null, exe: entry.exe ?? null }]
+    const r = runtime.applySettings({ launcher: { favorites: next } })
+    return { ok: r.ok, errors: r.errors ?? [], favorites: next.length, action: exists ? 'removed' : 'added' }
+  })
+
+  // ---- ★ 分用途模型（③）----
+  handle('llm:purposes', () => runtime.purposes())
+  handle('llm:config', (purpose) => runtime.llmConfig(purpose))
+
+  // ---- ★ Wiki 管线（②）----
+  handle('wiki:fetch', (url, o) => runtime.fetchWiki(url, o ?? {}))
+  handle('wiki:fill', (o) => runtime.fillCardFromWiki(o ?? {}))
 }
 
 // ---------- 作为入口直接运行时 ----------

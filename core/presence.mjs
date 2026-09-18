@@ -264,10 +264,25 @@ export function step(state, input, policy) {
       break
     }
 
+    // ★ 「我闭嘴」—— 由**表达层/模型**主动发起的取消（LLM 的 cancel 工具走这条）。
+    //   与 'activity' 的区别：那个是"外部世界又有动静了"，这个是"我自己判断不该说"。
+    //   分开记的原因是它们在指标里含义不同：前者是玩家行为，后者是角色的自我克制。
+    case 'cancel': {
+      if (s.pending) {
+        notes.push(`主动取消待发言（${input.reason ?? '未说明'}）`)
+        s.history = [...s.history, { at: input.at, kind: s.pending.kind, decision: 'canceled', reasons: ['self-cancel', input.reason ?? null] }]
+        s.pending = null
+        s.stats.droppedCanceled++
+      } else {
+        notes.push('没有待发言可取消')
+      }
+      s.stats.canceledBySelf = (s.stats.canceledBySelf ?? 0) + 1
+      break
+    }
+
     case 'tick': {
       if (Number.isFinite(input.idleSec)) s.idleSec = input.idleSec
       const focused = input.gameRunning === true && s.idleSec < th.relaxedIdleSec
-
       // ① 待发言的处理。**这是本模块最容易做错的一处**：
       //    「到了静默窗口但玩家还在玩」绝不能把待发言丢掉 —— 按用户原话，存档后接着打一会儿、
       //    再放下手柄，那**依然是**松懈时间。丢掉就等于要求玩家必须在存档后 20 秒内停手，太苛刻。
@@ -416,6 +431,8 @@ export function summarize(state, { policy, windowMs = 60 * 60_000 } = {}) {
     triggers: state.stats.triggers,
     merged: state.stats.merged,
     canceled: state.stats.droppedCanceled,
+    /** 其中由**角色自己**（cancel 工具）取消的次数 —— 与"被外部活动打断"分开计 */
+    canceledBySelf: state.stats.canceledBySelf ?? 0,
     // 因为玩家还在专心而推迟的次数 —— 不是失败，是"在等松懈"
     waitedForFocus: state.stats.waitedForFocus,
     // 等到过期都没等到松懈（想说话但一直没机会）

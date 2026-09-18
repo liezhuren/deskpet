@@ -127,6 +127,81 @@ app.whenReady().then(async () => {
     await settle(350)
     await shoot(pet, 'pet-speaking')
 
+    // ═══ ★ 新功能①⑤③：工具 / 启动器 / 分用途模型 ═══
+    // ① 工具在真实运行时就绪
+    const tState = runtime.toolState()
+    check('六个工具都接上了实现', tState.missing.length === 0, `缺：${tState.missing.join(',') || '无'}`)
+    check('工具总数是 6', tState.total === 6, String(tState.total))
+
+    // move_to 是**唯一由外壳实现**的工具 —— 这里直接验证它真的挪了窗口
+    const beforePos = pet.getPosition()
+    const moved = await runtime.runTool({ name: 'move_to', args: { x: 320, y: 240, reason: '自检' } })
+    check('move_to 被真实执行（不是只发事件）', moved.ok === true, JSON.stringify(moved.result ?? moved.error))
+    const afterPos = pet.getPosition()
+    check('move_to 真的挪动了窗口', afterPos[0] === 320 && afterPos[1] === 240, `${beforePos} -> ${afterPos}`)
+    // ★ 坐标是模型给的 ⇒ 必须钳制在可见范围内，否则桌宠会被挪出屏幕且用户找不回来
+    // ⚠ 先立刻再挪一次：这一步**应当被限流挡下**（工具是模型驱动的，
+    //   一个失控循环不能在 1 秒里把窗口挪 100 次）。第一次跑这条断言时我写错了 ——
+    //   我把"被限流"当成了失败，其实是限流在正常工作。
+    const rapid = await runtime.runTool({ name: 'move_to', args: { x: 100, y: 100 } })
+    check('连续调用 move_to 会被限流（防模型失控循环狂挪窗口）',
+      rapid.ok === false && /太频繁/.test(rapid.error ?? ''), rapid.error ?? JSON.stringify(rapid.result))
+    await settle(600)   // 等过最小间隔
+    const far = await runtime.runTool({ name: 'move_to', args: { x: 999999, y: -999999 } })
+    const clampedPos = pet.getPosition()
+    const disp = screen.getPrimaryDisplay().workArea
+    check('move_to 把离谱坐标钳制回可见范围（桌宠不会被弄丢）',
+      clampedPos[0] < disp.x + disp.width && clampedPos[1] > disp.y - 400, `请求 999999,-999999 -> 实际 ${clampedPos}`)
+    check('钳制时如实报告 clamped', far.ok === true && far.result?.clamped === true,
+      JSON.stringify(far.result ?? far.error))
+
+    const petr = await runtime.runTool({ name: 'pet', args: { times: 1 } })
+    check('pet 工具被执行且抬高了亲密度', petr.ok === true && petr.result.affinity > 0, JSON.stringify(petr.result))
+
+    // confirm 级工具：没有批准必须挂起，且**一次都不许真执行**
+    const launchReq = await runtime.runTool({ name: 'launch_app', args: { target: '自检用的不存在的游戏' } })
+    check('launch_app 未批准时被挂起（不是执行）',
+      launchReq.ok === false && launchReq.needsConfirm === true && Boolean(launchReq.pendingId), JSON.stringify(launchReq))
+    const approved = await runtime.approveTool(launchReq.pendingId)
+    check('批准后执行了，但目标不存在 ⇒ 启动被拒（**没有启动任何东西**）',
+      approved.ok === true && approved.result?.ok === false, JSON.stringify(approved.result))
+    check('审计留住了"被拒"的证据', runtime.toolState().stats.needsConfirm >= 1)
+
+    // ⑤ 启动器清单
+    const list = runtime.listLaunchables({ includeSteam: false })
+    check('启动器清单可枚举', Array.isArray(list.items), `${list.items.length} 项`)
+    const favDir = join(STATE, 'fake-game')
+    mkdirSync(favDir, { recursive: true })
+    writeFileSync(join(favDir, 'FakeGame.exe'), 'M'.repeat(1024))
+    runtime.applySettings({ launcher: { favorites: [{ dir: favDir, name: '自检假游戏' }] } })
+    const list2 = runtime.listLaunchables({ includeSteam: false })
+    const fav = list2.items.find((x) => x.name === '自检假游戏')
+    check('收藏的游戏出现在启动清单里并认出了 exe', Boolean(fav) && fav.launchable === true,
+      JSON.stringify(list2.items.map((x) => x.name)))
+    // ★ 只验证解析得到目标，**绝不真的启动它**
+    const resolved = runtime.resolveLaunchTarget('自检假游戏')
+    check('能按名字解析出启动目标（仅解析，不启动）', resolved.ok === true && resolved.item.name === '自检假游戏')
+
+    // ③ 分用途模型
+    const purposes = runtime.purposes()
+    check('分用途模型：5 个用途都解析得出来', purposes.length === 5, purposes.map((p) => p.id).join(','))
+    check('每个用途都带上了 provider 与来源', purposes.every((p) => typeof p.provider === 'string' && typeof p.source === 'string'))
+    check('未登记用途退回默认并如实标注', runtime.llmConfig('不存在的用途').unknownPurpose === true)
+
+    // ---- ★ 启动器页（走生产的 openWindow）----
+    const launcherWin = ctx.openWindow('launcher')
+    await settle(1600)
+    const ltitle = await launcherWin.webContents.executeJavaScript('document.title')
+    check('启动器页加载成功', typeof ltitle === 'string' && ltitle.length > 0, ltitle)
+    const sections = await launcherWin.webContents.executeJavaScript("document.querySelectorAll('main section').length")
+    check('启动器页四块都渲染出来了（待确认/可启动/游戏目录/工具记录）', sections >= 4, `sections=${sections}`)
+    const pendText = await launcherWin.webContents.executeJavaScript("document.getElementById('pending').textContent.length")
+    check('启动器页的待确认区域有内容（没有时也有说明）', pendText > 0, `chars=${pendText}`)
+    const histRows = await launcherWin.webContents.executeJavaScript(
+      "document.querySelectorAll('#toolHistory tbody tr').length")
+    check('启动器页显示了工具调用记录', histRows >= 1, `rows=${histRows}`)
+    await shoot(launcherWin, 'launcher')
+
     // ---- 设置页 / 人物卡页（走生产的 openWindow）----
     for (const [which, name] of [['settings', 'settings'], ['card', 'card']]) {
       const w = ctx.openWindow(which)
@@ -134,6 +209,34 @@ app.whenReady().then(async () => {
       const title = await w.webContents.executeJavaScript('document.title')
       check(`${name} 页加载成功`, typeof title === 'string' && title.length > 0, title)
       await shoot(w, name)
+    }
+
+    // ---- ★ 分用途模型表（③ 的界面部分）----
+    const sWin2 = ctx.getSettingsWindow()
+    if (sWin2) {
+      const rows = await sWin2.webContents.executeJavaScript(
+        "document.querySelectorAll('#purposeRows tbody tr').length")
+      check('设置页渲染出了分用途模型表（5 个用途各一行）', rows === 5, `rows=${rows}`)
+      const inputs = await sWin2.webContents.executeJavaScript(
+        "document.querySelectorAll('#purposeRows input').length")
+      check('每个用途都能覆盖 model / baseUrl / apiKey 并可关掉', inputs >= 20, `inputs=${inputs}`)
+      await sWin2.webContents.executeJavaScript(`
+        (() => {
+          const el = document.getElementById('purposeRows')
+          el.scrollIntoView({ block: 'start' })
+          // scrollIntoView 试过没用（截出来和顶部一模一样），所以显式设一次 scrollTop
+          const y = el.getBoundingClientRect().top + window.scrollY - 8
+          window.scrollTo(0, y)
+          document.documentElement.scrollTop = y
+          document.body.scrollTop = y
+          return window.scrollY
+        })()`)
+      await settle(400)
+      const scrollY = await sWin2.webContents.executeJavaScript('window.scrollY')
+      check('设置页真的滚到了分用途表（否则截图拍到的是顶部）', scrollY > 0, `scrollY=${scrollY}`)
+      await shoot(sWin2, 'settings-purposes')
+    } else {
+      check('设置页存在（分用途模型表要能在界面上验）', false, 'settings window missing')
     }
 
     // ---- ★ 驱动人物卡页的填表流程，并截图（"界面上真能用"只有截图能证明）----
