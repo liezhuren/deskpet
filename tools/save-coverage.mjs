@@ -1,0 +1,321 @@
+// tools/save-coverage.mjs —— 存档覆盖率实测：把「37.7%」这个数拆开看
+//
+// ══════════════════════════════════════════════════════════════════
+// 为什么不能直接看那一个比值
+// ══════════════════════════════════════════════════════════════════
+// 先前报出的「162 个候选 / 61 个完全解开 = 37.7%」里，**分子与分母不是同一群文件**：
+//   · 分母是 `isSaveCandidate()` 挑出来的 —— 它刻意只看名字与大小、不看语义，
+//     所以必然混进 settings.json / graphics.ini / 资源包这类**根本不是存档**的东西
+//   · 分子是"解码链完全理解了的文件"
+// 拿"能看懂的文件"除以"所有像文件的文件"，得到的既不是"存档读得好不好"，
+// 也不是"这个桌宠能不能用"。所以这个工具把账拆成四层：
+//
+//   ① 能不能解析（技术层）
+//   ② 解析不了的原因分布（是加密/私有二进制，还是我们没实现）
+//   ③ 按文件名粗分：失败是不是集中在**非存档**文件上
+//   ④ **按游戏汇总**：多少个游戏至少有一份能看懂的存档 —— 这才是产品层的指标
+//
+// 以及一个容易忘的事实：**产品基线根本不需要解码**。
+// 桌宠的核心能力是"存档被写入 ⇒ 这是松懈点"，那只需要文件 mtime。
+// 解码只决定"能不能读得更多"，不决定"能不能用"。
+
+import { readdirSync, statSync } from 'node:fs'
+import { join, basename, relative } from 'node:path'
+import { homedir } from 'node:os'
+
+import { decodeSaveFile } from '../core/decode.mjs'
+import { SKIP_DIR, SKIP_FILE, isSaveCandidate } from '../gameio/base.mjs'
+
+const args = process.argv.slice(2)
+const flag = (name, dflt) => {
+  const i = args.indexOf(`--${name}`)
+  return i >= 0 && args[i + 1] ? args[i + 1] : dflt
+}
+const LIMIT_PER_GAME = Number(flag('limit', '40'))
+const AS_JSON = args.includes('--json')
+
+/** 默认扫描根（与 probe-saves.mjs 保持一致）。 */
+function defaultRoots() {
+  const out = []
+  const home = homedir()
+  const localLow = join(home, 'AppData', 'LocalLow')
+  try {
+    for (const d of readdirSync(localLow, { withFileTypes: true })) {
+      if (!d.isDirectory()) continue
+      out.push({ engine: 'unity', game: d.name, dir: join(localLow, d.name) })
+    }
+  } catch { /* 没有 LocalLow 就算了 */ }
+  const appdata = join(home, 'AppData', 'Roaming')
+  try {
+    for (const d of readdirSync(appdata, { withFileTypes: true })) {
+      if (!d.isDirectory() || SKIP_DIR.test(d.name)) continue
+      out.push({ engine: 'godot/rpgmaker', game: d.name, dir: join(appdata, d.name) })
+    }
+  } catch { /* 同上 */ }
+  return out
+}
+
+function collect(dir, maxDepth = 3) {
+  const saves = []
+  const walk = (d, depth) => {
+    if (depth > maxDepth) return
+    let entries
+    try { entries = readdirSync(d, { withFileTypes: true }) } catch { return }
+    for (const e of entries) {
+      const p = join(d, e.name)
+      if (e.isDirectory()) { if (!SKIP_DIR.test(e.name)) walk(p, depth + 1); continue }
+      let st
+      try { st = statSync(p) } catch { continue }
+      if (!st.isFile() || st.size === 0 || st.size > 32 * 1024 * 1024) continue
+      if (!isSaveCandidate(e.name, st.size)) continue
+      saves.push({ p, name: e.name, size: st.size, mtimeMs: st.mtimeMs })
+    }
+  }
+  walk(dir, 0)
+  saves.sort((a, b) => b.size - a.size)
+  return saves
+}
+
+/**
+ * 按文件名粗分这三桶。**这是启发式，不是事实** —— 判不出来就进 unknown，
+ * 不硬塞（"猜"出来的归类会让后面的比例全是假的）。
+ */
+const NAME_BUCKETS = [
+  ['像存档', /(save|存档|slot|autosave|quicksave|progress|profile|player|file\d|data\d|game\d|user\d|global|persist)/i],
+  ['像配置', /(settings|config|prefs|preference|options|input|keybind|graphics|video|audio|quality|resolution|\.ini$|\.cfg$|\.conf$|registry)/i],
+  ['像资源', /(\.(bundle|assets|ress|resource|pak|bank|blob|bin\.assets|shader|mat|anim|controller|ttf|otf|wav|ogg|mp3|dds|ktx)$)/i],
+]
+function bucketOf(name) {
+  for (const [label, re] of NAME_BUCKETS) if (re.test(name)) return label
+  return '判不出来'
+}
+
+/**
+ * 失败原因的**终审结论**分类。`format` 在失败时就是"卡在哪一步"的结论，
+ * 所以直接按它归类；比按 notes 猜文本可靠。
+ */
+const FAIL_REASON = {
+  binary: '非文本二进制（加密或私有格式）—— 需要游戏专用解码器',
+  'base64-binary': 'base64 里包着二进制 —— 多半是加密的',
+  'base64-text': 'base64 解出文本但不是已知结构（可能再套了一层加密）',
+  'binary-formatter': '.NET BinaryFormatter —— 本工具不实现反序列化',
+  text: '是文本，但不是 JSON/XML/Godot/INI —— 未知的文本结构',
+  zip: 'zip 容器读不开',
+  unknown: '认不出任何已知特征',
+  'too-large': '超过解析上限（只算了哈希）',
+  empty: '空文件',
+}
+const reasonOf = (r) => FAIL_REASON[r.format] ?? `其他（${r.format}）`
+
+// ══════════════════ 跑 ══════════════════
+
+const roots = defaultRoots()
+const rows = []
+for (const root of roots) {
+  const saves = collect(root.dir)
+  if (saves.length === 0) {
+    rows.push({ ...root, candidates: 0, files: [] })
+    continue
+  }
+  const files = saves.slice(0, LIMIT_PER_GAME).map((f) => {
+    const r = decodeSaveFile(f.p)
+    return {
+      name: f.name, size: f.size, ok: r.ok === true,
+      format: r.format, content: r.content, chain: r.chain ?? [],
+      bucket: bucketOf(f.name), note: (r.notes ?? []).slice(-1)[0] ?? '',
+    }
+  })
+  rows.push({ ...root, candidates: saves.length, files, truncated: saves.length > files.length })
+}
+
+const all = rows.flatMap((g) => g.files)
+const okFiles = all.filter((f) => f.ok)
+
+// ① 技术层
+const parseRate = all.length ? okFiles.length / all.length : 0
+
+// ② 失败原因
+const reasons = new Map()
+for (const f of all.filter((x) => !x.ok)) {
+  const k = reasonOf(f)
+  reasons.set(k, (reasons.get(k) ?? 0) + 1)
+}
+
+// ③ 按文件名分桶
+const byBucket = new Map()
+for (const f of all) {
+  const b = byBucket.get(f.bucket) ?? { total: 0, ok: 0 }
+  b.total++
+  if (f.ok) b.ok++
+  byBucket.set(f.bucket, b)
+}
+
+// ④ 按游戏汇总（产品层指标）
+const gamesWithAny = rows.filter((g) => g.candidates > 0)
+const gamesWithDecoded = rows.filter((g) => g.files.some((f) => f.ok))
+const gamesWithFiles = gamesWithAny.length
+
+if (AS_JSON) {
+  console.log(JSON.stringify({
+    games: rows.length, gamesWithAny, gamesWithDecoded: gamesWithDecoded.length,
+    candidates: all.length, decoded: okFiles.length, parseRate,
+    reasons: [...reasons].sort((a, b) => b[1] - a[1]),
+    buckets: [...byBucket].map(([k, v]) => ({ bucket: k, ...v })),
+    perGame: rows.map((g) => ({
+      game: g.game, engine: g.engine, candidates: g.candidates,
+      decoded: g.files.filter((f) => f.ok).length,
+    })),
+    failures: all.filter((f) => !f.ok).map((f) => ({ name: f.name, format: f.format, bucket: f.bucket })),
+  }, null, 2))
+  process.exit(0)
+}
+
+const pad = (s, n) => String(s ?? '').padEnd(n)
+const pct = (a, b) => (b === 0 ? '—' : `${(a / b * 100).toFixed(1)}%`)
+
+console.log(`扫描到 ${rows.length} 个游戏目录，其中 ${gamesWithFiles} 个有候选文件。\n`)
+
+console.log('═'.repeat(78))
+console.log('① 技术层：解析成功率（分母 = 所有"像存档的"文件）')
+console.log('═'.repeat(78))
+console.log(`  候选 ${all.length} 个，解析成功 ${okFiles.length} 个 ⇒ ${pct(okFiles.length, all.length)}`)
+console.log('  ⚠ 这个比值**不能当作"存档读得好不好"**：分母混着配置/资源等根本不是存档的文件。')
+
+console.log('\n' + '═'.repeat(78))
+console.log('② 解析不了的原因分布（按终审结论归类）')
+console.log('═'.repeat(78))
+for (const [k, v] of [...reasons].sort((a, b) => b[1] - a[1])) {
+  console.log(`  ${pad(v, 5)} ${pct(v, all.length - okFiles.length).padStart(6)}  ${k}`)
+}
+
+console.log('\n' + '═'.repeat(78))
+console.log('③ 按文件名粗分：失败集中在哪一类？（**启发式归类，只是线索**）')
+console.log('═'.repeat(78))
+console.log(`  ${pad('桶', 10)} ${pad('候选', 6)} ${pad('解析成功', 8)} 成功率`)
+for (const [k, v] of [...byBucket].sort((a, b) => b[1].total - a[1].total)) {
+  console.log(`  ${pad(k, 10)} ${pad(v.total, 6)} ${pad(v.ok, 8)} ${pct(v.ok, v.total)}`)
+}
+
+console.log('\n' + '═'.repeat(78))
+console.log('④ 产品层：多少个游戏**至少**有一份能看懂的存档')
+console.log('═'.repeat(78))
+console.log(`  有候选文件的游戏 ${gamesWithFiles} 个；其中至少解出一份的 ${gamesWithDecoded.length} 个`
+  + ` ⇒ ${pct(gamesWithDecoded.length, gamesWithFiles)}`)
+console.log('  ★ 这才是"我能不能读懂这个游戏"的指标 —— 一个游戏只要有一份能读，内容级理解就成立。')
+
+const noDecode = gamesWithAny.filter((g) => !g.files.some((f) => f.ok))
+console.log(`\n  完全读不懂的游戏 ${noDecode.length} 个：`)
+for (const g of noDecode.slice(0, 15)) {
+  const fmt = [...new Set(g.files.map((f) => f.format))].join('/')
+  console.log(`    · ${pad(g.game, 30)} ${pad(g.files.length + ' 个文件', 10)} 全是 ${fmt}`)
+}
+if (noDecode.length > 15) console.log(`    …另有 ${noDecode.length - 15} 个`)
+
+console.log('\n' + '═'.repeat(78))
+console.log('⑤ 别忘了：产品基线**不需要解码**')
+console.log('═'.repeat(78))
+console.log(`  桌宠的核心能力是"存档被写入 ⇒ 现在是松懈点"，那只需要文件 mtime。`)
+console.log(`  有候选文件的 ${gamesWithFiles} 个游戏，**全都能**给到"存档已更新"这类时机事件。`)
+console.log(`  解码只决定"能不能多说点内容"，不决定"能不能用"。`)
+console.log(`  所以：时机层覆盖 ${pct(gamesWithFiles, rows.length)}（${gamesWithFiles}/${rows.length}），`
+  + `内容层覆盖 ${pct(gamesWithDecoded.length, rows.length)}（${gamesWithDecoded.length}/${rows.length}）。`)
+
+console.log('\n' + '═'.repeat(78))
+console.log('⑥ 解析成功的都是什么格式（看看解码链在真实语料上打到哪）')
+console.log('═'.repeat(78))
+const byContent = new Map()
+for (const f of okFiles) byContent.set(f.content, (byContent.get(f.content) ?? 0) + 1)
+for (const [k, v] of [...byContent].sort((a, b) => b[1] - a[1])) console.log(`  ${pad(v, 5)} ${k}`)
+
+console.log('\n' + '═'.repeat(78))
+console.log('⑦ 按扩展名分布：那些"判不出来"的候选到底是什么文件')
+console.log('═'.repeat(78))
+const ext = (n) => {
+  const m = /\.([A-Za-z0-9_]{1,8})$/.exec(n)
+  return m ? `.${m[1].toLowerCase()}` : '(无扩展名)'
+}
+const byExt = new Map()
+for (const f of all) {
+  const e = ext(f.name)
+  const b = byExt.get(e) ?? { total: 0, ok: 0, bytes: 0 }
+  b.total++
+  b.bytes += f.size
+  if (f.ok) b.ok++
+  byExt.set(e, b)
+}
+console.log(`  ${pad('扩展名', 16)} ${pad('候选', 6)} ${pad('成功', 6)} ${pad('成功率', 8)} ${pad('总大小', 12)} 备注`)
+for (const [k, v] of [...byExt].sort((a, b) => b[1].total - a[1].total).slice(0, 22)) {
+  const mb = v.bytes / 1024 / 1024
+  const flag = v.ok === 0 && v.total >= 20 ? '★ 整类读不懂' : ''
+  console.log(`  ${pad(k, 16)} ${pad(v.total, 6)} ${pad(v.ok, 6)} ${pad(pct(v.ok, v.total), 8)} ${pad(mb.toFixed(1) + 'MB', 12)} ${flag}`)
+}
+const noExt = byExt.get('(无扩展名)')
+if (noExt) console.log(`\n  （无扩展名的文件 ${noExt.total} 个，成功 ${noExt.ok} 个 —— 这些几乎只能是游戏自己的存档）`)
+
+// ══════════════════ ⑧ 清账：把明显不是存档的文件摘掉再算一次 ══════════════════
+//
+// 这一步不是"把数字做好看"，而是**把问题问对**：
+// "我的解码链在存档上表现如何" 与 "我扫到的文件里有多少能被解析" 是两个问题。
+// 排除清单是**明确的、可审计的**（不是"挑到满意为止"）：
+//   字体 / 词典 / 图标 / 脚本与扩展模块 / 样式表 / 备份 / 无扩展名的资源块
+// 保留的是"有可能是存档"的一切 —— 包括我们目前读不了的私有格式。
+
+const NOT_SAVE_EXT = /\.(woff2?|ttf|otf|eot|bdic|ico|cur|bmp|py|pyc|pyd|xsl|xslt|css|old|bak|tmp|ldb|log|dll|so|dylib)$/i
+/** 没有扩展名、又很大 —— 实测这类基本是着色器缓存/资源块（本机 855 个共 272MB）。 */
+const looksLikeBlob = (f) => !/\./.test(f.name) && f.size > 256 * 1024
+
+const saveish = all.filter((f) => !NOT_SAVE_EXT.test(f.name) && !looksLikeBlob(f))
+const saveishOk = saveish.filter((f) => f.ok)
+
+console.log('\n' + '═'.repeat(78))
+console.log('⑧ 清账：摘掉明显不是存档的文件之后，再看一次')
+console.log('═'.repeat(78))
+console.log(`  排除了 ${all.length - saveish.length} 个：字体/词典/图标/脚本/样式表/备份，`)
+console.log(`  以及 ${all.filter(looksLikeBlob).length} 个"无扩展名且 >256KB"的资源块（合计 ${(all.filter(looksLikeBlob).reduce((a, f) => a + f.size, 0) / 1024 / 1024).toFixed(0)}MB）。`)
+console.log(`  剩下 ${saveish.length} 个"有可能是存档"的文件，其中解析成功 ${saveishOk.length} 个 ⇒ ${pct(saveishOk.length, saveish.length)}`)
+
+// 再看游戏层
+const gamesClean = rows.map((g) => {
+  const files = g.files.filter((f) => !NOT_SAVE_EXT.test(f.name) && !looksLikeBlob(f))
+  return { ...g, clean: files, cleanOk: files.filter((f) => f.ok).length }
+}).filter((g) => g.clean.length > 0)
+const cleanDecoded = gamesClean.filter((g) => g.cleanOk > 0)
+console.log(`  有"像存档"文件的游戏 ${gamesClean.length} 个，其中至少解出一份的 ${cleanDecoded.length} 个`
+  + ` ⇒ ${pct(cleanDecoded.length, gamesClean.length)}`)
+
+console.log('\n' + '─'.repeat(78))
+console.log('  四个不同分母下的同一件事，请按问题选一个看：')
+console.log('─'.repeat(78))
+const variants = [
+  ['所有候选文件（含字体/词典/缓存块）', all.length, okFiles.length],
+  ['像存档的文件（摘掉明显非存档）', saveish.length, saveishOk.length],
+  ['文件名像存档的', byBucket.get('像存档')?.total ?? 0, byBucket.get('像存档')?.ok ?? 0],
+  ['游戏层：至少有一份能读懂', gamesClean.length, cleanDecoded.length],
+]
+for (const [label, a, b] of variants) console.log(`  ${pad(label, 36)} ${pad(`${b}/${a}`, 12)} ${pct(b, a)}`)
+
+console.log('\n' + '─'.repeat(78))
+console.log('  能改的地方（从数据里直接看出来的，不是猜的）：')
+console.log('─'.repeat(78))
+const dbish = all.filter((f) => /\.(db|sqlite|sqlite3|ldb)$/i.test(f.name))
+if (dbish.length) {
+  console.log(`  · **SQLite / LevelDB 共 ${dbish.length} 个文件、0 个能读**。`)
+  console.log('    Node 24 自带 node:sqlite（本项目实测无需 flag）⇒ 这是最容易吃到的一类')
+}
+const bf = all.filter((f) => f.format === 'dotnet-binaryformatter')
+if (bf.length) {
+  console.log(`  · **.NET BinaryFormatter ${bf.length} 个文件、0 个能读**（含 Team Cherry / Team Salvato）。`)
+  console.log('    格式有公开文档，实现常用子集是可行的 —— 但这要按真实样本逐步对，不能凭文档写')
+}
+const noExtBig = all.filter(looksLikeBlob)
+if (noExtBig.length) {
+  console.log(`  · 无扩展名的资源块 ${noExtBig.length} 个（${(noExtBig.reduce((a, f) => a + f.size, 0) / 1024 / 1024).toFixed(0)}MB）`
+    + ' —— 应当从"存档候选"里排除，否则分母永远被这类文件撑着')
+}
+const rootNoise = ['AMD', 'Microsoft', 'NVIDIA', 'Intel']
+const noise = rows.filter((g) => rootNoise.includes(g.game))
+if (noise.length) {
+  console.log(`  · 扫描根里混着非游戏目录（${noise.map((g) => g.game).join('、')}），`
+    + `合计 ${noise.reduce((a, g) => a + g.files.length, 0)} 个候选 —— SKIP_DIR 只挡了子目录，没挡根这一层`)
+}
+

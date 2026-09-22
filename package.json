@@ -10,6 +10,7 @@
     "start": "electron app/main.mjs",
     "smoke": "electron app/smoke.mjs",
     "probe": "node tools/probe-saves.mjs",
+    "coverage": "node tools/save-coverage.mjs",
     "games": "node tools/inspect-game.mjs --list",
     "inspect": "node tools/inspect-game.mjs",
     "art": "node tools/art-check.mjs",
