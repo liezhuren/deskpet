@@ -68,7 +68,7 @@ function collect(dir, maxDepth = 3) {
       try { st = statSync(p) } catch { continue }
       if (!st.isFile() || st.size === 0 || st.size > 32 * 1024 * 1024) continue
       if (!isSaveCandidate(e.name, st.size)) continue
-      saves.push({ p, name: e.name, size: st.size, mtimeMs: st.mtimeMs })
+      saves.push({ p, name: e.name, size: st.size, mtimeMs: st.mtimeMs, rel: relative(dir, p) })
     }
   }
   walk(dir, 0)
@@ -120,7 +120,7 @@ for (const root of roots) {
   const files = saves.slice(0, LIMIT_PER_GAME).map((f) => {
     const r = decodeSaveFile(f.p)
     return {
-      name: f.name, size: f.size, ok: r.ok === true,
+      name: f.name, rel: f.rel, size: f.size, mtimeMs: f.mtimeMs, ok: r.ok === true,
       format: r.format, content: r.content, chain: r.chain ?? [],
       bucket: bucketOf(f.name), note: (r.notes ?? []).slice(-1)[0] ?? '',
     }
@@ -318,4 +318,158 @@ if (noise.length) {
   console.log(`  · 扫描根里混着非游戏目录（${noise.map((g) => g.game).join('、')}），`
     + `合计 ${noise.reduce((a, g) => a + g.files.length, 0)} 个候选 —— SKIP_DIR 只挡了子目录，没挡根这一层`)
 }
+
+// ══════════════════ ⑨ ★「如果知道存档是哪个文件」—— 解析率是多少 ══════════════════
+//
+// 这是把"解码器行不行"与"候选挑得准不准"**分开**来问。
+// 麻烦在于：我无法在"读不出来"的情况下知道哪个文件是存档 —— 读不出来正是问题本身。
+// 所以只能用**结构性信号**逼近，并且把规则的严格程度列出来，让比值自己说话：
+//
+//   A 在存档目录里    路径里含 save/saves/SaveData/存档/slot/profile 之类的目录名。
+//                     **这是最强的结构信号**：游戏不会把设置文件放进 save 目录。
+//   B 名字像存档      上轮那套文件名正则。
+//   C 无（自定义）扩展名、又不是大资源块 —— 游戏自己的存档常是这样。
+//   D 其它
+//
+// 然后按"每款游戏取一个最像的"来算 —— 那就是"你指给我看哪个是存档"的近似。
+// ⚠ 残留的不确定：A 里也可能混着 `settings.json`（有些游戏把设置也塞进 save 目录）。
+//   对**能读出来的**那部分，我抽查内容里有没有游戏状态字段来验证选择规则有没有选错；
+//   读不出来的那部分**无法验证**，所以那个比值只能当上界，不能当精确值。
+
+const SAVE_DIR_RE = /(^|[\\/])(save|saves|savedata|savegame|savegames|save_data|slot|slots|profile|userdata|存档|进度)([\\/]|$)/i
+const NAME_SAVE_RE = /(save|存档|slot|autosave|quicksave|progress|profile|player|file\d|data\d|game\d|user\d|global|persist)/i
+/**
+ * 强判据：**精确匹配**的键名（不用子串）。
+ * 第一版用子串匹配，于是 `saveTime`/`AFKAutoKickTime` 里的 `time` 让纯设置文件
+ * 也被算成"像存档"。键名要精确对，`level` 就算数，`levelUpSoundVolume` 不算。
+ */
+const STRONG_STATE_RE = /^(level|lv|hp|mp|maxhp|max_hp|maxmp|health|exp|experience|gold|money|coin|coins|score|scene|map|mapid|map_id|chapter|stage|quest|quests|item|items|inventory|equip|equipment|skill|skills|flag|flags|switch|switches|variable|variables|progress|playtime|play_time|slot|slots|saveid|save_id|character|characters|party|unlocked|achievements|day|days|dungeon|floor|wave|kills|deaths|deaths_)$/i
+const STRONG_CONFIG_RE = /^(settings|config|prefs|preferences|options|sound|music|vsync|volume|mastervolume|resolution|language|locale|graphics|quality|fullscreen|windowed|antialiasing|shadows|texturequality|audiosettings|input|keybindings)$/i
+
+function levelOf(f) {
+  if (SAVE_DIR_RE.test(`\\${f.rel}`)) return 'A'
+  if (NAME_SAVE_RE.test(f.name)) return 'B'
+  if (!/\./.test(f.name) && f.size <= 256 * 1024) return 'C'
+  return 'D'
+}
+for (const g of rows) for (const f of g.files) f.level = levelOf(f)
+
+/** 这份内容里有没有游戏状态字段？（只看能读出来的） */
+function looksLikeGameState(f) {
+  if (!f.ok) return null
+  if (f.content === 'json' || f.content === 'lzstring') {
+    // 重新读一次拿结构（解析成本低，只对子集做）
+    try {
+      const r = decodeSaveFile(join(g.p ?? '', ''))
+      void r
+    } catch { /* 忽略 */ }
+  }
+  return null
+}
+
+/** 每条规则下：文件级解析率。 */
+const RULES = [
+  ['A 在存档目录里', (f) => f.level === 'A'],
+  ['A+B 存档目录里 或 名字像存档', (f) => f.level === 'A' || f.level === 'B'],
+  ['A+B+C 再加上"自定义扩展名的小文件"', (f) => f.level !== 'D'],
+  ['B 仅名字像存档（上一轮口径）', (f) => f.level === 'B'],
+]
+
+console.log('\n' + '═'.repeat(78))
+console.log('⑨ ★ 如果知道存档是哪个文件 —— 解析率是多少')
+console.log('═'.repeat(78))
+console.log(`  ${pad('选文件规则', 34)} ${pad('文件数', 8)} ${pad('解析成功', 9)} 解析率`)
+for (const [label, test] of RULES) {
+  const set = all.filter(test)
+  const ok = set.filter((f) => f.ok)
+  console.log(`  ${pad(label, 34)} ${pad(set.length, 8)} ${pad(ok.length, 9)} ${pct(ok.length, set.length)}`)
+}
+
+/** 每款游戏"取一个最像的" —— 这就是"你告诉我哪个是存档"的近似。 */
+const CONFIG_NAME_RE = /(settings|config|prefs|preference|options|input|keybind|graphics|video|audio|quality|resolution|locale|language|steam_autocloud|cloud)/i
+
+function bestOf(files, test) {
+  const cand = files.filter(test)
+    // ★ 排除"一眼是设置文件"的：第一版没排，结果挑出来的 `UCHSave` 里全是
+    //   `sound/music/vsync` —— 那种文件"能解析"完全不代表"读到了存档"。
+    .filter((f) => !CONFIG_NAME_RE.test(f.name))
+  if (cand.length === 0) return null
+  // 优先级：存档目录 > 名字像存档 > 自定义扩展名；同级里取**最近修改**的
+  // （存档会随游玩被改写，这比体积更能指向真正的存档）
+  const rank = (f) => (f.level === 'A' ? 0 : f.level === 'B' ? 1 : f.level === 'C' ? 2 : 3)
+  cand.sort((a, b) => rank(a) - rank(b) || (b.mtimeMs ?? 0) - (a.mtimeMs ?? 0))
+  return cand[0]
+}
+
+console.log('\n  ── 按"每款游戏取一个最像的存档"算（最接近"你指给我看"）──')
+const onePerGame = []
+for (const g of rows) {
+  const pick = bestOf(g.files, (f) => f.level !== 'D')
+  if (pick) onePerGame.push({ game: g.game, pick })
+}
+const oneOk = onePerGame.filter((x) => x.pick.ok)
+console.log(`  ${onePerGame.length} 款游戏各取 1 个最像的存档文件：解析成功 ${oneOk.length} 个 ⇒ **${pct(oneOk.length, onePerGame.length)}**`)
+console.log(`  ★ 这就是"如果知道存档在哪个文件里"的解析率 —— 分母不再是所有像文件的文件。`)
+
+const pickFail = onePerGame.filter((x) => !x.pick.ok)
+if (pickFail.length) {
+  const byFmt = new Map()
+  for (const x of pickFail) byFmt.set(x.pick.format, (byFmt.get(x.pick.format) ?? 0) + 1)
+  console.log(`\n  这 ${pickFail.length} 款挑出来的"最像存档"读不了的，卡在：`)
+  for (const [k, v] of [...byFmt].sort((a, b) => b[1] - a[1])) {
+    console.log(`    ${pad(v, 4)} ${k}  —— ${FAIL_REASON[k] ?? '其他'}`)
+  }
+  console.log('\n  举例（这些就是"知道文件也读不出来"的那些）：')
+  for (const x of pickFail.slice(0, 12)) {
+    console.log(`    · ${pad(x.game, 24)} ${pad(x.pick.rel, 34)} ${pad(x.pick.format, 24)} ${(x.pick.size / 1024).toFixed(0)}KB`)
+  }
+  if (pickFail.length > 12) console.log(`    …另有 ${pickFail.length - 12} 款`)
+}
+
+/** 反向验证：能读出来的那些，内容里有没有游戏状态字段？ */
+const okPicks = oneOk
+let stateLike = 0
+let configLike = 0
+const samples = []
+const configSamples = []
+for (const x of okPicks) {
+  if (!['json', 'lzstring', 'xml', 'godot-resource', 'json@offset'].includes(x.pick.content)) continue
+  const g = rows.find((r) => r.game === x.game)
+  const p = join(g.dir, x.pick.rel)
+  try {
+    const r = decodeSaveFile(p)
+    const text = JSON.stringify(r.value ?? r.godot?.props ?? '').slice(0, 20000)
+    const keys = [...text.matchAll(/"([A-Za-z_][A-Za-z0-9_]{1,24})"\s*:/g)].map((m) => m[1])
+    // 精确键名判定：先看有几个"铁定是配置"的键，再看有没有"铁定是状态"的键
+    const cfg = keys.filter((k) => STRONG_CONFIG_RE.test(k)).length
+    const strong = keys.filter((k) => STRONG_STATE_RE.test(k))
+    if (strong.length >= 1) {
+      stateLike++
+      if (samples.length < 6) samples.push(`${x.game}: ${[...new Set(strong)].slice(0, 6).join(', ')}`)
+    } else if (cfg >= 2) {
+      configLike++
+      if (configSamples.length < 5) configSamples.push(`${x.game}: ${keys.slice(0, 7).join(', ')}`)
+    }
+  } catch { /* 读不了就跳过 */ }
+}
+console.log(`\n  ── 能不能用内容验证"这真的是存档"？**不能** ──`)
+console.log(`  用**精确键名**判（level/hp/gold/quest/slot/items…）：只有 ${stateLike} / ${okPicks.length} 命中`)
+console.log(`  用**子串**判（第一版的做法）：把 \`saveTime\`/\`AFKAutoKickTime\` 里的 \`time\` 也算命中，`)
+console.log(`    于是纯设置文件（sound/music/vsync）被误判成存档 ⇒ 假阳性`)
+console.log(`  两个方向都不准：严了漏掉真存档，松了把设置文件算进来。`)
+if (samples.length) {
+  console.log('  精确键名命中的抽样（这些是**确实**读到游戏状态的）：')
+  for (const s of samples) console.log(`    · ${s}`)
+}
+console.log(`  真实存档的键名多半是**游戏自创**的（hPoint / itemMK / UCHSave / serializedEmails…），`)
+console.log(`  任何通用规则都抓不住 ⇒ **内容校验不是可用判据**，既不能证真也不能证伪。`)
+console.log('')
+console.log('  ★ 想真正定下"哪个文件是存档"，只有一个可靠办法：')
+console.log('    **在游戏里存一次档，看哪个文件的 mtime 变了。**')
+console.log('    那需要有人真的去玩 —— 我离线做不到。')
+console.log('')
+console.log('    但这件事在**运行时是免费的**：桌宠盯的就是文件 mtime，')
+console.log('    它上线一会儿就能自己知道每款游戏"存档是哪个文件"。')
+console.log('    所以⑨这一节的比值只在"离线先估一下"时有用，不是运行时的那笔账。')
+
 
